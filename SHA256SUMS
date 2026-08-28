@@ -1,1 +1,2 @@
 fccd14dd2e822d53d0ad9e63f7e19b99bff5e5629866a5253a9398f350417634  etc/update-motd.d/10-server-info
+90349b756912a4587abc87452d4b64bd50acab2d2aed4687fb9ee51b47259cd2  usr/local/bin/server-info

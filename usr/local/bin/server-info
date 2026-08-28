@@ -1,0 +1,46 @@
+#!/bin/bash
+
+set -Eeuo pipefail
+
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+
+readonly MOTD_SCRIPT="/etc/update-motd.d/10-server-info"
+
+print_usage() {
+    printf 'Usage: server-info\n\n'
+    printf 'Show current system information without the MOTD welcome message.\n'
+}
+
+case $# in
+    0)
+        ;;
+    1)
+        case $1 in
+            -h | --help)
+                print_usage
+                exit 0
+                ;;
+            *)
+                printf 'Error: unknown argument: %s\n\n' "$1" >&2
+                print_usage >&2
+                exit 2
+                ;;
+        esac
+        ;;
+    *)
+        printf 'Error: expected no arguments or --help\n\n' >&2
+        print_usage >&2
+        exit 2
+        ;;
+esac
+
+if [[ -L $MOTD_SCRIPT ||
+    ! -f $MOTD_SCRIPT ||
+    ! -x $MOTD_SCRIPT ]]; then
+    printf 'Error: installed MOTD script is unavailable: %s\n' \
+        "$MOTD_SCRIPT" >&2
+    exit 1
+fi
+
+exec "$MOTD_SCRIPT" --manual

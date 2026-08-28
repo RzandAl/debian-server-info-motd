@@ -13,13 +13,17 @@ readonly REPOSITORY="RazisID12/debian-server-info-motd"
 readonly SOURCE_REF="main"
 readonly RAW_BASE_URL="https://raw.githubusercontent.com/${REPOSITORY}/${SOURCE_REF}"
 readonly PAYLOAD_PATH="etc/update-motd.d/10-server-info"
+readonly COMMAND_PATH="usr/local/bin/server-info"
 readonly CHECKSUM_PATH="SHA256SUMS"
 
 readonly MOTD_DIRECTORY="/etc/update-motd.d"
 readonly TARGET_FILE="${MOTD_DIRECTORY}/10-server-info"
+readonly COMMAND_DIRECTORY="/usr/local/bin"
+readonly COMMAND_FILE="${COMMAND_DIRECTORY}/server-info"
 readonly MOTD_FILE="/etc/motd"
 readonly ISSUE_FILE="/etc/issue"
 readonly STATE_DIRECTORY="/var/lib/${PROJECT_ID}"
+readonly CURRENT_STATE_FORMAT="1"
 
 readonly STEP_DELAY="0.4"
 readonly DEBUG_LINE_DELAY="0.1"
@@ -32,18 +36,28 @@ mode_file=""
 rollback_directory=""
 rollback_mode_file=""
 target_temp_file=""
+command_temp_file=""
 state_checksum_temp=""
+state_command_checksum_temp=""
 state_source_ref_temp=""
 downloaded_script=""
+downloaded_command=""
 downloaded_checksums=""
 expected_checksum=""
+expected_command_checksum=""
 actual_checksum=""
+actual_command_checksum=""
 installed_checksum=""
+installed_command_checksum=""
 installed_source_ref=""
+installed_state_format=""
+verification_checksum=""
 selected_action=""
 menu_choice=""
 target_status="unknown"
+command_status="unknown"
 motd_directory_preexisted=1
+command_directory_preexisted=1
 active_operation="Installation"
 operation_key="install"
 changes_started=0
@@ -201,15 +215,23 @@ download_and_verify_payload() {
 
     temporary_directory=$(mktemp -d "/tmp/${PROJECT_ID}.XXXXXX")
     downloaded_script="${temporary_directory}/${PAYLOAD_PATH}"
+    downloaded_command="${temporary_directory}/${COMMAND_PATH}"
     downloaded_checksums="${temporary_directory}/${CHECKSUM_PATH}"
 
     debug_log "Temporary directory: ${temporary_directory}"
 
-    install -d -m 0700 -- "${temporary_directory}/etc/update-motd.d"
+    install -d -m 0700 -- \
+        "${temporary_directory}/etc/update-motd.d" \
+        "${temporary_directory}/usr/local/bin"
 
     if ! download_file \
         "${RAW_BASE_URL}/${PAYLOAD_PATH}" "$downloaded_script"; then
         fail "could not download ${PAYLOAD_PATH}"
+    fi
+
+    if ! download_file \
+        "${RAW_BASE_URL}/${COMMAND_PATH}" "$downloaded_command"; then
+        fail "could not download ${COMMAND_PATH}"
     fi
 
     if ! download_file \
@@ -236,6 +258,22 @@ download_and_verify_payload() {
     expected_checksum=${expected_checksum,,}
     debug_log "Expected SHA-256: ${expected_checksum}"
 
+    expected_command_checksum=$(
+        awk -v path="$COMMAND_PATH" '
+            $2 == path {
+                print $1
+                exit
+            }
+        ' "$downloaded_checksums"
+    )
+
+    if [[ ! $expected_command_checksum =~ ^[[:xdigit:]]{64}$ ]]; then
+        fail "no valid checksum found for ${COMMAND_PATH}"
+    fi
+
+    expected_command_checksum=${expected_command_checksum,,}
+    debug_log "Expected command SHA-256: ${expected_command_checksum}"
+
     actual_checksum=$(sha256sum -- "$downloaded_script")
     actual_checksum=${actual_checksum%% *}
 
@@ -245,11 +283,24 @@ download_and_verify_payload() {
         fail "checksum verification failed for ${PAYLOAD_PATH}"
     fi
 
+    actual_command_checksum=$(sha256sum -- "$downloaded_command")
+    actual_command_checksum=${actual_command_checksum%% *}
+
+    debug_log "Actual command SHA-256: ${actual_command_checksum}"
+
+    if [[ $expected_command_checksum != "$actual_command_checksum" ]]; then
+        fail "checksum verification failed for ${COMMAND_PATH}"
+    fi
+
     if ! bash -n "$downloaded_script"; then
         fail "downloaded MOTD script has invalid Bash syntax"
     fi
 
-    debug_log "Downloaded MOTD script syntax: valid"
+    if ! bash -n "$downloaded_command"; then
+        fail "downloaded manual command has invalid Bash syntax"
+    fi
+
+    debug_log "Downloaded Bash syntax: valid"
     complete_step
 }
 
@@ -259,9 +310,20 @@ cleanup() {
         rm -f -- "$target_temp_file"
     fi
 
+    if [[ -n $command_temp_file &&
+        ( -e $command_temp_file || -L $command_temp_file ) ]]; then
+        rm -f -- "$command_temp_file"
+    fi
+
     if [[ -n $state_checksum_temp &&
         ( -e $state_checksum_temp || -L $state_checksum_temp ) ]]; then
         rm -f -- "$state_checksum_temp"
+    fi
+
+    if [[ -n $state_command_checksum_temp &&
+        ( -e $state_command_checksum_temp ||
+            -L $state_command_checksum_temp ) ]]; then
+        rm -f -- "$state_command_checksum_temp"
     fi
 
     if [[ -n $state_source_ref_temp &&
@@ -360,7 +422,6 @@ validate_installed_state() {
     local script_name
     local script_path
     local state_attributes
-    local state_format
     local state_path
     local -A seen_scripts=()
 
@@ -379,6 +440,7 @@ validate_installed_state() {
         "${STATE_DIRECTORY}/state-format" \
         "${STATE_DIRECTORY}/source-ref" \
         "${STATE_DIRECTORY}/payload.sha256" \
+        "${STATE_DIRECTORY}/command.sha256" \
         "${STATE_DIRECTORY}/enabled-script-modes"; do
         if [[ -L $state_path || ! -f $state_path ]]; then
             fail "invalid installation state file: ${state_path}"
@@ -392,10 +454,10 @@ validate_installed_state() {
         fail "invalid backup directory: ${backup_directory}"
     fi
 
-    state_format=$(< "${STATE_DIRECTORY}/state-format")
+    installed_state_format=$(< "${STATE_DIRECTORY}/state-format")
 
-    if [[ $state_format != "1" ]]; then
-        fail "unsupported installation state format: ${state_format}"
+    if [[ $installed_state_format != "$CURRENT_STATE_FORMAT" ]]; then
+        fail "unsupported installation state format: ${installed_state_format}"
     fi
 
     installed_source_ref=$(< "${STATE_DIRECTORY}/source-ref")
@@ -410,6 +472,13 @@ validate_installed_state() {
 
     if [[ ! $installed_checksum =~ ^[[:xdigit:]]{64}$ ]]; then
         fail "invalid payload checksum in installation state"
+    fi
+
+    installed_command_checksum=$(< "${STATE_DIRECTORY}/command.sha256")
+    installed_command_checksum=${installed_command_checksum,,}
+
+    if [[ ! $installed_command_checksum =~ ^[[:xdigit:]]{64}$ ]]; then
+        fail "invalid command checksum in installation state"
     fi
 
     for backup_name in motd issue; do
@@ -462,6 +531,44 @@ validate_installed_state() {
 
         if [[ $current_checksum != "$installed_checksum" ]]; then
             target_status="modified"
+        fi
+    fi
+
+    if [[ -e ${STATE_DIRECTORY}/command-directory.present ||
+        -L ${STATE_DIRECTORY}/command-directory.present ]]; then
+        if [[ -L ${STATE_DIRECTORY}/command-directory.present ||
+            ! -f ${STATE_DIRECTORY}/command-directory.present ]]; then
+            fail "invalid command directory marker"
+        fi
+
+        command_directory_preexisted=1
+    else
+        command_directory_preexisted=0
+    fi
+
+    if [[ -L $COMMAND_DIRECTORY || ! -d $COMMAND_DIRECTORY ]]; then
+        fail "expected a directory: ${COMMAND_DIRECTORY}"
+    fi
+
+    command_status="valid"
+
+    if [[ -L $COMMAND_FILE ]]; then
+        fail "installed manual command is a symbolic link: ${COMMAND_FILE}"
+    elif [[ ! -e $COMMAND_FILE ]]; then
+        command_status="missing"
+    elif [[ ! -f $COMMAND_FILE ]]; then
+        fail "installed manual command is not a regular file: ${COMMAND_FILE}"
+    else
+        if [[ $(stat -c '%U:%G:%a' -- "$COMMAND_FILE") != \
+            "root:root:755" ]]; then
+            fail "unexpected ownership or mode on ${COMMAND_FILE}"
+        fi
+
+        current_checksum=$(sha256sum -- "$COMMAND_FILE")
+        current_checksum=${current_checksum%% *}
+
+        if [[ $current_checksum != "$installed_command_checksum" ]]; then
+            command_status="modified"
         fi
     fi
 
@@ -526,10 +633,12 @@ validate_installed_state() {
         fail "unexpected enabled MOTD scripts were found"
     fi
 
-    debug_log "Installation state format: ${state_format}"
+    debug_log "Installation state format: ${installed_state_format}"
     debug_log "Installed source reference: ${installed_source_ref}"
     debug_log "Installed payload SHA-256: ${installed_checksum}"
+    debug_log "Installed command SHA-256: ${installed_command_checksum}"
     debug_log "Installed MOTD script status: ${target_status}"
+    debug_log "Installed manual command status: ${command_status}"
     debug_log "Installed MOTD configuration: valid"
 }
 
@@ -541,6 +650,9 @@ rollback_installation() {
     debug_log "Rolling back installation"
     debug_log "Removing: ${TARGET_FILE}"
     rm -f -- "$TARGET_FILE" || rollback_failed=1
+
+    debug_log "Removing: ${COMMAND_FILE}"
+    rm -f -- "$COMMAND_FILE" || rollback_failed=1
 
     restore_file "$MOTD_FILE" "motd" || rollback_failed=1
     restore_file "$ISSUE_FILE" "issue" || rollback_failed=1
@@ -564,6 +676,10 @@ rollback_installation() {
         rmdir -- "$MOTD_DIRECTORY" 2>/dev/null || true
     fi
 
+    if ((command_directory_preexisted == 0)); then
+        rmdir -- "$COMMAND_DIRECTORY" 2>/dev/null || true
+    fi
+
     if ((rollback_failed == 0)); then
         changes_started=0
         return 0
@@ -583,14 +699,25 @@ rollback_update() {
         debug_log "Restored previous version: ${TARGET_FILE}"
     fi
 
-    if ! printf '%s\n' "$installed_checksum" > \
-        "${STATE_DIRECTORY}/payload.sha256"; then
+    if ! restore_transaction_file "$COMMAND_FILE" "command"; then
         rollback_failed=1
+    else
+        debug_log "Restored previous command state: ${COMMAND_FILE}"
     fi
 
-    if ! printf '%s\n' "$installed_source_ref" > \
-        "${STATE_DIRECTORY}/source-ref"; then
+    restore_transaction_file \
+        "${STATE_DIRECTORY}/payload.sha256" "state-payload" || \
         rollback_failed=1
+    restore_transaction_file \
+        "${STATE_DIRECTORY}/command.sha256" "state-command" || \
+        rollback_failed=1
+    restore_transaction_file \
+        "${STATE_DIRECTORY}/source-ref" "state-source-ref" || \
+        rollback_failed=1
+    if [[ -n $command_temp_file &&
+        ( -e $command_temp_file || -L $command_temp_file ) ]]; then
+        rm -f -- "$command_temp_file" || rollback_failed=1
+        command_temp_file=""
     fi
 
     if ((rollback_failed == 0)); then
@@ -614,7 +741,14 @@ rollback_uninstallation() {
             rollback_failed=1
     fi
 
+    if [[ ! -d $COMMAND_DIRECTORY ]]; then
+        install -d -o root -g root -m 0755 -- "$COMMAND_DIRECTORY" || \
+            rollback_failed=1
+    fi
+
     restore_transaction_file "$TARGET_FILE" "target" || rollback_failed=1
+    restore_transaction_file "$COMMAND_FILE" "command" || \
+        rollback_failed=1
     restore_transaction_file "$MOTD_FILE" "motd" || rollback_failed=1
     restore_transaction_file "$ISSUE_FILE" "issue" || rollback_failed=1
 
@@ -802,39 +936,69 @@ confirm_uninstallation() {
             ;;
     esac
 
+    case $command_status in
+        missing)
+            print_warning "the installed manual command is missing."
+            ;;
+        modified)
+            print_warning \
+                "the installed manual command was modified and will be removed."
+            ;;
+    esac
+
     confirm_yes_no \
         "Uninstall ${PROJECT_NAME} and restore the previous MOTD?"
 }
 
 confirm_update_repair() {
-    local question
+    local repair_required=0
 
     case $target_status in
         valid)
-            return 0
             ;;
         missing)
             print_warning "the installed MOTD script is missing."
-            question="Restore it from the repository?"
+            repair_required=1
             ;;
         modified)
             print_warning "the installed MOTD script was modified."
-            question="Replace it with the repository version?"
+            repair_required=1
             ;;
         *)
             fail "unknown installed MOTD script status: ${target_status}"
             ;;
     esac
 
-    confirm_yes_no "$question"
+    case $command_status in
+        valid)
+            ;;
+        missing)
+            print_warning "the installed manual command is missing."
+            repair_required=1
+            ;;
+        modified)
+            print_warning "the installed manual command was modified."
+            repair_required=1
+            ;;
+        *)
+            fail "unknown installed manual command status: ${command_status}"
+            ;;
+    esac
+
+    if ((repair_required == 0)); then
+        return 0
+    fi
+
+    confirm_yes_no "Repair the installation from the repository?"
 }
 
 run_update() {
     local current_checksum
+    local current_command_checksum
     local enabled_output
-    local installed_file_message
     local install_step_description
     local result_message
+    local update_available=0
     local verification_step_description
 
     active_operation="Update"
@@ -850,7 +1014,9 @@ run_update() {
         return 0
     fi
 
-    if [[ $target_status != "valid" ]] && ((debug_mode == 0)); then
+    if [[ $target_status != "valid" ||
+        $command_status == "missing" ||
+        $command_status == "modified" ]] && ((debug_mode == 0)); then
         printf '\n'
     fi
 
@@ -858,8 +1024,13 @@ run_update() {
 
     begin_step 4 "Comparing versions..."
 
-    if [[ $actual_checksum == "$installed_checksum" &&
-        $target_status == "valid" ]]; then
+    if [[ $actual_checksum != "$installed_checksum" ||
+        $actual_command_checksum != "$installed_command_checksum" ]]; then
+        update_available=1
+    fi
+
+    if ((update_available == 0)) &&
+        [[ $target_status == "valid" && $command_status == "valid" ]]; then
         debug_log "Installed version is already current"
         complete_step
 
@@ -868,6 +1039,7 @@ run_update() {
 
         begin_step 6 "Verifying installation..."
         "$TARGET_FILE" >/dev/null
+        "$COMMAND_FILE" >/dev/null
         complete_step
 
         cleanup
@@ -876,17 +1048,26 @@ run_update() {
         return 0
     fi
 
-    if [[ $actual_checksum != "$installed_checksum" ]]; then
-        debug_log \
-            "Update available: ${installed_checksum} -> ${actual_checksum}"
-        installed_file_message="Installed updated file"
+    if ((update_available == 1)); then
+        if [[ $actual_checksum != "$installed_checksum" ]]; then
+            debug_log \
+                "Payload update: ${installed_checksum} -> ${actual_checksum}"
+        fi
+
+        if [[ $actual_command_checksum != "$installed_command_checksum" ]]; then
+            debug_log \
+                "Command update:" \
+                "${installed_command_checksum} ->" \
+                "$actual_command_checksum"
+        fi
+
         install_step_description="Installing update..."
         result_message="${PROJECT_NAME} was updated successfully."
         verification_step_description="Verifying update..."
     else
-        debug_log "Repair required: installed MOTD script is ${target_status}"
+        debug_log "Repair required: MOTD script is ${target_status}"
+        debug_log "Repair required: manual command is ${command_status}"
         active_operation="Repair"
-        installed_file_message="Restored MOTD script"
         install_step_description="Repairing installation..."
         result_message="${PROJECT_NAME} was repaired successfully."
         verification_step_description="Verifying repair..."
@@ -898,25 +1079,51 @@ run_update() {
     rollback_directory="${temporary_directory}/rollback"
     install -d -m 0700 -- "$rollback_directory"
     backup_transaction_file "$TARGET_FILE" "target"
+    backup_transaction_file "$COMMAND_FILE" "command"
+    backup_transaction_file \
+        "${STATE_DIRECTORY}/payload.sha256" "state-payload"
+    backup_transaction_file \
+        "${STATE_DIRECTORY}/command.sha256" "state-command"
+    backup_transaction_file \
+        "${STATE_DIRECTORY}/source-ref" "state-source-ref"
+    if [[ -L $COMMAND_DIRECTORY ||
+        ( -e $COMMAND_DIRECTORY && ! -d $COMMAND_DIRECTORY ) ]]; then
+        fail "expected a directory: ${COMMAND_DIRECTORY}"
+    fi
 
     target_temp_file=$(mktemp "${MOTD_DIRECTORY}/.10-server-info.XXXXXX")
     install -o root -g root -m 0755 -- \
         "$downloaded_script" "$target_temp_file"
 
+    command_temp_file=$(mktemp "${COMMAND_DIRECTORY}/.server-info.XXXXXX")
+    install -o root -g root -m 0755 -- \
+        "$downloaded_command" "$command_temp_file"
+
     changes_started=1
     mv -f -- "$target_temp_file" "$TARGET_FILE"
     target_temp_file=""
+    mv -f -- "$command_temp_file" "$COMMAND_FILE"
+    command_temp_file=""
 
-    debug_log "${installed_file_message}: ${TARGET_FILE}"
+    debug_log "Installed MOTD script: ${TARGET_FILE}"
+    debug_log "Installed manual command: ${COMMAND_FILE}"
     complete_step
     begin_step 6 "$verification_step_description"
 
     current_checksum=$(sha256sum -- "$TARGET_FILE")
     current_checksum=${current_checksum%% *}
+    current_command_checksum=$(sha256sum -- "$COMMAND_FILE")
+    current_command_checksum=${current_command_checksum%% *}
 
     if [[ $current_checksum != "$actual_checksum" ]]; then
         mark_step_failed
         print_error "updated MOTD checksum verification failed"
+        false
+    fi
+
+    if [[ $current_command_checksum != "$actual_command_checksum" ]]; then
+        mark_step_failed
+        print_error "updated command checksum verification failed"
         false
     fi
 
@@ -934,11 +1141,18 @@ run_update() {
     fi
 
     "$TARGET_FILE" >/dev/null
+    "$COMMAND_FILE" >/dev/null
 
     state_checksum_temp=$(mktemp \
         "${STATE_DIRECTORY}/.payload.sha256.XXXXXX")
     printf '%s\n' "$actual_checksum" > "$state_checksum_temp"
     chmod 0600 -- "$state_checksum_temp"
+
+    state_command_checksum_temp=$(mktemp \
+        "${STATE_DIRECTORY}/.command.sha256.XXXXXX")
+    printf '%s\n' "$actual_command_checksum" > \
+        "$state_command_checksum_temp"
+    chmod 0600 -- "$state_command_checksum_temp"
 
     state_source_ref_temp=$(mktemp \
         "${STATE_DIRECTORY}/.source-ref.XXXXXX")
@@ -947,10 +1161,17 @@ run_update() {
 
     mv -f -- "$state_checksum_temp" "${STATE_DIRECTORY}/payload.sha256"
     state_checksum_temp=""
+    mv -f -- "$state_command_checksum_temp" \
+        "${STATE_DIRECTORY}/command.sha256"
+    state_command_checksum_temp=""
     mv -f -- "$state_source_ref_temp" "${STATE_DIRECTORY}/source-ref"
     state_source_ref_temp=""
 
-    if [[ $(< "${STATE_DIRECTORY}/payload.sha256") != "$actual_checksum" ||
+    if [[ $(< "${STATE_DIRECTORY}/state-format") != \
+            "$CURRENT_STATE_FORMAT" ||
+        $(< "${STATE_DIRECTORY}/payload.sha256") != "$actual_checksum" ||
+        $(< "${STATE_DIRECTORY}/command.sha256") != \
+            "$actual_command_checksum" ||
         $(< "${STATE_DIRECTORY}/source-ref") != "$SOURCE_REF" ]]; then
         mark_step_failed
         print_error "could not verify the updated installation state"
@@ -958,6 +1179,7 @@ run_update() {
     fi
 
     debug_log "Updated payload SHA-256: ${actual_checksum}"
+    debug_log "Updated command SHA-256: ${actual_command_checksum}"
     complete_step
 
     changes_started=0
@@ -999,6 +1221,7 @@ run_uninstallation() {
 
     install -d -m 0700 -- "$rollback_directory"
     backup_transaction_file "$TARGET_FILE" "target"
+    backup_transaction_file "$COMMAND_FILE" "command"
     backup_transaction_file "$MOTD_FILE" "motd"
     backup_transaction_file "$ISSUE_FILE" "issue"
     : > "$rollback_mode_file"
@@ -1030,6 +1253,22 @@ run_uninstallation() {
     debug_log "Removing: ${TARGET_FILE}"
     rm -f -- "$TARGET_FILE"
 
+    debug_log "Removing: ${COMMAND_FILE}"
+    rm -f -- "$COMMAND_FILE"
+
+    if ((command_directory_preexisted == 0)); then
+        debug_log \
+            "Removing installer-created directory: ${COMMAND_DIRECTORY}"
+
+        if ! rmdir -- "$COMMAND_DIRECTORY" 2>/dev/null; then
+            if [[ -L $COMMAND_DIRECTORY || ! -d $COMMAND_DIRECTORY ]]; then
+                false
+            fi
+
+            debug_log "Keeping non-empty directory: ${COMMAND_DIRECTORY}"
+        fi
+    fi
+
     if ((motd_directory_preexisted == 0)); then
         debug_log "Removing installer-created directory: ${MOTD_DIRECTORY}"
         rmdir -- "$MOTD_DIRECTORY"
@@ -1041,6 +1280,12 @@ run_uninstallation() {
     if [[ -e $TARGET_FILE || -L $TARGET_FILE ]]; then
         mark_step_failed
         print_error "installed MOTD script still exists after removal"
+        false
+    fi
+
+    if [[ -e $COMMAND_FILE || -L $COMMAND_FILE ]]; then
+        mark_step_failed
+        print_error "installed manual command still exists after removal"
         false
     fi
 
@@ -1180,9 +1425,24 @@ if [[ -e $TARGET_FILE || -L $TARGET_FILE ]]; then
     fail "refusing to overwrite an unmanaged file: ${TARGET_FILE}"
 fi
 
+if [[ -e $COMMAND_FILE || -L $COMMAND_FILE ]]; then
+    fail "refusing to overwrite an unmanaged file: ${COMMAND_FILE}"
+fi
+
 if [[ -L $MOTD_DIRECTORY ||
     ( -e $MOTD_DIRECTORY && ! -d $MOTD_DIRECTORY ) ]]; then
     fail "expected a directory: ${MOTD_DIRECTORY}"
+fi
+
+if [[ -L $COMMAND_DIRECTORY ||
+    ( -e $COMMAND_DIRECTORY && ! -d $COMMAND_DIRECTORY ) ]]; then
+    fail "expected a directory: ${COMMAND_DIRECTORY}"
+fi
+
+if [[ -d $COMMAND_DIRECTORY ]]; then
+    command_directory_preexisted=1
+else
+    command_directory_preexisted=0
 fi
 
 for static_file in "$MOTD_FILE" "$ISSUE_FILE"; do
@@ -1251,6 +1511,10 @@ if [[ -d $MOTD_DIRECTORY ]]; then
     : > "${state_work_directory}/update-motd-directory.present"
 fi
 
+if ((command_directory_preexisted == 1)); then
+    : > "${state_work_directory}/command-directory.present"
+fi
+
 backup_file "$MOTD_FILE" "motd"
 backup_file "$ISSUE_FILE" "issue"
 
@@ -1264,9 +1528,21 @@ for script_path in "${enabled_scripts[@]}"; do
     debug_log "Saved mode ${script_mode}: ${script_path}"
 done
 
-printf '%s\n' "1" > "${state_work_directory}/state-format"
+printf '%s\n' "$CURRENT_STATE_FORMAT" > \
+    "${state_work_directory}/state-format"
 printf '%s\n' "$SOURCE_REF" > "${state_work_directory}/source-ref"
 printf '%s\n' "$actual_checksum" > "${state_work_directory}/payload.sha256"
+printf '%s\n' "$actual_command_checksum" > \
+    "${state_work_directory}/command.sha256"
+
+if [[ -e $COMMAND_FILE || -L $COMMAND_FILE ]]; then
+    fail "refusing to overwrite an unmanaged file: ${COMMAND_FILE}"
+fi
+
+if [[ -L $COMMAND_DIRECTORY ||
+    ( -e $COMMAND_DIRECTORY && ! -d $COMMAND_DIRECTORY ) ]]; then
+    fail "expected a directory: ${COMMAND_DIRECTORY}"
+fi
 
 changes_started=1
 
@@ -1275,8 +1551,16 @@ if [[ ! -d $MOTD_DIRECTORY ]]; then
     install -d -o root -g root -m 0755 -- "$MOTD_DIRECTORY"
 fi
 
+if [[ ! -d $COMMAND_DIRECTORY ]]; then
+    debug_log "Creating directory: ${COMMAND_DIRECTORY}"
+    install -d -o root -g root -m 0755 -- "$COMMAND_DIRECTORY"
+fi
+
 debug_log "Installing: ${TARGET_FILE}"
 install -o root -g root -m 0644 -- "$downloaded_script" "$TARGET_FILE"
+
+debug_log "Installing: ${COMMAND_FILE}"
+install -o root -g root -m 0755 -- "$downloaded_command" "$COMMAND_FILE"
 
 for script_path in "${enabled_scripts[@]}"; do
     debug_log "Disabling MOTD script: ${script_path}"
@@ -1299,6 +1583,7 @@ fi
 
 chmod 0755 -- "$TARGET_FILE"
 debug_log "Installed mode 0755: ${TARGET_FILE}"
+debug_log "Installed mode 0755: ${COMMAND_FILE}"
 
 complete_step
 begin_step 4 "Verifying installation..."
@@ -1320,6 +1605,27 @@ fi
 debug_log "Executing installed MOTD script for verification"
 "$TARGET_FILE" >/dev/null
 
+verification_checksum=$(sha256sum -- "$TARGET_FILE")
+verification_checksum=${verification_checksum%% *}
+
+if [[ $verification_checksum != "$actual_checksum" ]]; then
+    mark_step_failed
+    print_error "installed MOTD checksum verification failed"
+    false
+fi
+
+verification_checksum=$(sha256sum -- "$COMMAND_FILE")
+verification_checksum=${verification_checksum%% *}
+
+if [[ $verification_checksum != "$actual_command_checksum" ]]; then
+    mark_step_failed
+    print_error "installed command checksum verification failed"
+    false
+fi
+
+debug_log "Executing installed manual command for verification"
+"$COMMAND_FILE" >/dev/null
+
 complete_step
 
 : > "${state_work_directory}/installed"
@@ -1333,3 +1639,4 @@ cleanup
 trap - ERR HUP INT TERM
 print_success "${PROJECT_NAME} was installed successfully."
 printf 'Open a new SSH or local console session to see the MOTD.\n'
+printf 'Run server-info at any time to show the same information manually.\n'
