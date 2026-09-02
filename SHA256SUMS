@@ -1,3 +1,3 @@
-e9dd8507f4bf0c6f42458e41aea833ad0bd3f6127272335eee9bf4d58541ed67  VERSION
-fccd14dd2e822d53d0ad9e63f7e19b99bff5e5629866a5253a9398f350417634  etc/update-motd.d/10-server-info
+1f930dd1f133c1f97a94fe3acb8db34372cf4c01ffdb2b3ff4ca72f9494121e9  VERSION
+97d4091ce6207d5d01d7801f2e49bd2e42f09026ccec8a5fef0c85344c229d3e  etc/update-motd.d/10-server-info
 90349b756912a4587abc87452d4b64bd50acab2d2aed4687fb9ee51b47259cd2  usr/local/bin/server-info
