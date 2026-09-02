@@ -1178,8 +1178,8 @@ run_update() {
         false
     fi
 
-    debug_log "Updated payload SHA-256: ${actual_checksum}"
-    debug_log "Updated command SHA-256: ${actual_command_checksum}"
+    debug_log "Verified payload SHA-256: ${actual_checksum}"
+    debug_log "Verified command SHA-256: ${actual_command_checksum}"
     complete_step
 
     changes_started=0
