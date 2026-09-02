@@ -45,6 +45,7 @@ manual `server-info` command does not add this trailing separator.
 - Process and login session counts
 - Graceful fallback when optional system information is unavailable
 - Manual output without the welcome message through `server-info`
+- Optional management of OpenSSH's native `Last login` notice
 - Managed installation, updates, repair, rollback, and uninstallation
 
 ## Requirements
@@ -55,6 +56,9 @@ manual `server-info` command does not add this trailing separator.
 
 Network information requires the `ip` command provided by `iproute2`. If it is
 unavailable, the rest of the system summary is still displayed.
+
+Managing the native `Last login` notice requires `openssh-server` and an active
+Debian `ssh.service`. The MOTD itself does not require OpenSSH.
 
 ## Install from `main`
 
@@ -103,6 +107,26 @@ Show command help:
 server-info --help
 ```
 
+## OpenSSH Last login notice
+
+The project leaves OpenSSH configuration unchanged by default. If
+`PrintLastLog` is effectively disabled during a new installation, the installer
+offers to enable it explicitly; the default answer is **No**.
+
+For an existing installation, run the installer and select **Configure OpenSSH
+Last login**. If the notice is already enabled, the action makes no changes. If
+it is disabled and you confirm the change, the installer:
+
+- creates `/etc/ssh/sshd_config.d/00-debian-server-info-motd.conf` without
+  editing existing OpenSSH configuration files;
+- validates the complete configuration with `sshd -t` before applying it;
+- reloads the active Debian SSH service and verifies the effective value;
+- records ownership of the drop-in in the installation state.
+
+The managed drop-in is removed during uninstallation, restoring the previous
+effective configuration. If that file was modified after installation, the
+uninstaller preserves it instead of deleting user changes.
+
 ## Update or repair
 
 Run the installer again with the same source reference you chose during
@@ -142,6 +166,8 @@ The installer:
 - records the installed version, source reference, managed checksums, and
   recovery state under
   `/var/lib/debian-server-info-motd`;
+- optionally enables OpenSSH's native `Last login` notice through a separately
+  tracked configuration drop-in;
 - attempts an automatic rollback if installation, update, repair, or removal
   fails;
 - restores the previous static MOTD files and script modes during uninstallation.
@@ -176,6 +202,7 @@ bash -s -- --help
 | `/etc/update-motd.d/10-server-info` | Dynamic login summary |
 | `/usr/local/bin/server-info` | Manual system information command |
 | `/var/lib/debian-server-info-motd/` | Version, source ref, checksums, backups, and installation state |
+| `/etc/ssh/sshd_config.d/00-debian-server-info-motd.conf` | Optional managed OpenSSH `Last login` setting |
 
 ## License
 
