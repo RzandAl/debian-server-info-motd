@@ -279,7 +279,7 @@ download_and_verify_payload() {
 
     debug_log "Actual SHA-256: ${actual_checksum}"
 
-    if [[ $expected_checksum != $actual_checksum ]]; then
+    if [[ $expected_checksum != "$actual_checksum" ]]; then
         fail "checksum verification failed for ${PAYLOAD_PATH}"
     fi
 
@@ -1367,6 +1367,7 @@ fi
 ID=""
 NAME=""
 VERSION_ID=""
+# shellcheck disable=SC1091
 . /etc/os-release
 
 debug_log "Operating system: ${NAME:-$ID} ${VERSION_ID}"
