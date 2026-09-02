@@ -25,6 +25,8 @@ readonly MOTD_FILE="/etc/motd"
 readonly ISSUE_FILE="/etc/issue"
 readonly STATE_DIRECTORY="/var/lib/${PROJECT_ID}"
 readonly CURRENT_STATE_FORMAT="2"
+readonly SSHD_CONFIG_DIRECTORY="/etc/ssh/sshd_config.d"
+readonly LAST_LOGIN_CONFIG_FILE="${SSHD_CONFIG_DIRECTORY}/00-${PROJECT_ID}.conf"
 
 readonly STEP_DELAY="0.4"
 readonly DEBUG_LINE_DELAY="0.1"
@@ -42,6 +44,8 @@ state_checksum_temp=""
 state_command_checksum_temp=""
 state_source_ref_temp=""
 state_version_temp=""
+state_last_login_checksum_temp=""
+last_login_config_temp=""
 downloaded_script=""
 downloaded_command=""
 downloaded_checksums=""
@@ -63,6 +67,14 @@ selected_action=""
 menu_choice=""
 target_status="unknown"
 command_status="unknown"
+last_login_config_status="unmanaged"
+last_login_effective="unavailable"
+last_login_reload_method=""
+last_login_requested=0
+last_login_managed=0
+last_login_change_started=0
+installed_last_login_checksum=""
+desired_last_login_checksum=""
 motd_directory_preexisted=1
 command_directory_preexisted=1
 active_operation="Installation"
@@ -272,6 +284,189 @@ fail() {
     exit 1
 }
 
+render_last_login_config() {
+    printf '%s\n' \
+        '# Managed by Debian Server Info MOTD.' \
+        'PrintLastLog yes'
+}
+
+calculate_desired_last_login_checksum() {
+    desired_last_login_checksum=$(render_last_login_config | sha256sum)
+    desired_last_login_checksum=${desired_last_login_checksum%% *}
+}
+
+detect_effective_last_login() {
+    local effective_output=""
+    local effective_value=""
+
+    last_login_effective="unavailable"
+
+    if ! command -v sshd >/dev/null 2>&1 ||
+        ! effective_output=$(sshd -T 2>/dev/null); then
+        return 0
+    fi
+
+    effective_value=$(
+        awk '
+            $1 == "printlastlog" {
+                print $2
+                exit
+            }
+        ' <<< "$effective_output"
+    )
+
+    case $effective_value in
+        yes)
+            last_login_effective="enabled"
+            ;;
+        no)
+            last_login_effective="disabled"
+            ;;
+    esac
+}
+
+select_ssh_reload_method() {
+    last_login_reload_method=""
+
+    if command -v systemctl >/dev/null 2>&1 &&
+        systemctl is-active --quiet ssh.service 2>/dev/null; then
+        last_login_reload_method="systemctl"
+        return 0
+    fi
+
+    if command -v service >/dev/null 2>&1 &&
+        service ssh status >/dev/null 2>&1; then
+        last_login_reload_method="service"
+        return 0
+    fi
+
+    return 1
+}
+
+reload_ssh_daemon() {
+    case $last_login_reload_method in
+        systemctl)
+            debug_log "Reloading OpenSSH through ssh.service"
+            systemctl reload ssh.service >/dev/null
+            ;;
+        service)
+            debug_log "Reloading OpenSSH through the service command"
+            service ssh reload >/dev/null
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+verify_managed_last_login_config() {
+    local config_checksum
+
+    [[ -f $LAST_LOGIN_CONFIG_FILE && ! -L $LAST_LOGIN_CONFIG_FILE ]] ||
+        return 1
+
+    [[ $(stat -c '%U:%G:%a' -- "$LAST_LOGIN_CONFIG_FILE") == \
+        "root:root:644" ]] || return 1
+
+    config_checksum=$(sha256sum -- "$LAST_LOGIN_CONFIG_FILE")
+    config_checksum=${config_checksum%% *}
+
+    [[ $config_checksum == "$desired_last_login_checksum" ]]
+}
+
+install_managed_last_login_config() {
+    if [[ -L $SSHD_CONFIG_DIRECTORY ||
+        ! -d $SSHD_CONFIG_DIRECTORY ]]; then
+        mark_step_failed
+        print_error \
+            "expected an OpenSSH configuration directory: ${SSHD_CONFIG_DIRECTORY}"
+        false
+    fi
+
+    if ((last_login_managed == 0)) &&
+        [[ -e $LAST_LOGIN_CONFIG_FILE || -L $LAST_LOGIN_CONFIG_FILE ]]; then
+        mark_step_failed
+        print_error \
+            "refusing to overwrite an unmanaged file: ${LAST_LOGIN_CONFIG_FILE}"
+        false
+    fi
+
+    if [[ -L $LAST_LOGIN_CONFIG_FILE ||
+        ( -e $LAST_LOGIN_CONFIG_FILE &&
+            ! -f $LAST_LOGIN_CONFIG_FILE ) ]]; then
+        mark_step_failed
+        print_error \
+            "expected a regular file or an absent path: ${LAST_LOGIN_CONFIG_FILE}"
+        false
+    fi
+
+    if [[ -z $last_login_reload_method ]] &&
+        ! select_ssh_reload_method; then
+        mark_step_failed
+        print_error "could not select a safe OpenSSH reload method"
+        false
+    fi
+
+    last_login_config_temp=$(mktemp \
+        "${SSHD_CONFIG_DIRECTORY}/.${PROJECT_ID}.XXXXXX")
+    render_last_login_config > "$last_login_config_temp"
+    chown root:root -- "$last_login_config_temp"
+    chmod 0644 -- "$last_login_config_temp"
+
+    last_login_change_started=1
+    mv -f -- "$last_login_config_temp" "$LAST_LOGIN_CONFIG_FILE"
+    last_login_config_temp=""
+
+    debug_log "Installed OpenSSH configuration: ${LAST_LOGIN_CONFIG_FILE}"
+
+    if ! sshd -t; then
+        mark_step_failed
+        print_error "OpenSSH rejected the updated configuration"
+        false
+    fi
+
+    if ! reload_ssh_daemon; then
+        mark_step_failed
+        print_error "could not reload OpenSSH"
+        false
+    fi
+
+    detect_effective_last_login
+
+    if [[ $last_login_effective != "enabled" ]]; then
+        mark_step_failed
+        print_error "OpenSSH Last login notices are still disabled"
+        false
+    fi
+}
+
+prompt_enable_last_login() {
+    detect_effective_last_login
+    debug_log "OpenSSH Last login: ${last_login_effective}"
+
+    if [[ $last_login_effective != "disabled" ]]; then
+        return 0
+    fi
+
+    if [[ -e $LAST_LOGIN_CONFIG_FILE || -L $LAST_LOGIN_CONFIG_FILE ]]; then
+        print_warning \
+            "OpenSSH Last login is disabled, but ${LAST_LOGIN_CONFIG_FILE} already exists."
+        return 0
+    fi
+
+    if [[ -L $SSHD_CONFIG_DIRECTORY ||
+        ! -d $SSHD_CONFIG_DIRECTORY ]] ||
+        ! select_ssh_reload_method; then
+        print_warning \
+            "OpenSSH Last login is disabled and cannot be managed safely on this system."
+        return 0
+    fi
+
+    if confirm_yes_no "Enable OpenSSH Last login notices?"; then
+        last_login_requested=1
+    fi
+}
+
 download_file() {
     local source_url=$1
     local destination_path=$2
@@ -462,6 +657,17 @@ cleanup() {
         rm -f -- "$state_version_temp"
     fi
 
+    if [[ -n $state_last_login_checksum_temp &&
+        ( -e $state_last_login_checksum_temp ||
+            -L $state_last_login_checksum_temp ) ]]; then
+        rm -f -- "$state_last_login_checksum_temp"
+    fi
+
+    if [[ -n $last_login_config_temp &&
+        ( -e $last_login_config_temp || -L $last_login_config_temp ) ]]; then
+        rm -f -- "$last_login_config_temp"
+    fi
+
     if ((preserve_temporary == 0)) &&
         [[ -n $temporary_directory && -d $temporary_directory ]]; then
         rm -rf -- "$temporary_directory"
@@ -616,6 +822,52 @@ validate_installed_state() {
 
     if [[ ! $installed_command_checksum =~ ^[[:xdigit:]]{64}$ ]]; then
         fail "invalid command checksum in installation state"
+    fi
+
+    last_login_managed=0
+    last_login_config_status="unmanaged"
+    installed_last_login_checksum=""
+
+    state_path="${STATE_DIRECTORY}/last-login.sha256"
+
+    if [[ -e $state_path || -L $state_path ]]; then
+        if [[ -L $state_path || ! -f $state_path ]]; then
+            fail "invalid installation state file: ${state_path}"
+        fi
+
+        installed_last_login_checksum=$(< "$state_path")
+        installed_last_login_checksum=${installed_last_login_checksum,,}
+
+        if [[ ! $installed_last_login_checksum =~ \
+            ^[[:xdigit:]]{64}$ ]]; then
+            fail "invalid Last login checksum in installation state"
+        fi
+
+        last_login_managed=1
+        last_login_config_status="valid"
+
+        if [[ -L $LAST_LOGIN_CONFIG_FILE ]]; then
+            fail \
+                "managed OpenSSH configuration is a symbolic link: ${LAST_LOGIN_CONFIG_FILE}"
+        elif [[ ! -e $LAST_LOGIN_CONFIG_FILE ]]; then
+            last_login_config_status="missing"
+        elif [[ ! -f $LAST_LOGIN_CONFIG_FILE ]]; then
+            fail \
+                "managed OpenSSH configuration is not a regular file: ${LAST_LOGIN_CONFIG_FILE}"
+        elif [[ $(stat -c '%U:%G:%a' -- \
+                "$LAST_LOGIN_CONFIG_FILE") != "root:root:644" ]]; then
+            last_login_config_status="modified"
+        else
+            current_checksum=$(sha256sum -- "$LAST_LOGIN_CONFIG_FILE")
+            current_checksum=${current_checksum%% *}
+
+            if [[ $current_checksum != "$installed_last_login_checksum" ]]; then
+                last_login_config_status="modified"
+            fi
+        fi
+    elif [[ -e $LAST_LOGIN_CONFIG_FILE ||
+        -L $LAST_LOGIN_CONFIG_FILE ]]; then
+        last_login_config_status="unmanaged-conflict"
     fi
 
     for backup_name in motd issue; do
@@ -777,6 +1029,13 @@ validate_installed_state() {
     debug_log "Installed command SHA-256: ${installed_command_checksum}"
     debug_log "Installed MOTD script status: ${target_status}"
     debug_log "Installed manual command status: ${command_status}"
+    if ((last_login_managed == 1)); then
+        debug_log "Managed OpenSSH Last login: yes"
+    else
+        debug_log "Managed OpenSSH Last login: no"
+    fi
+
+    debug_log "OpenSSH Last login configuration status: ${last_login_config_status}"
     debug_log "Installed MOTD configuration: valid"
 }
 
@@ -791,6 +1050,19 @@ rollback_installation() {
 
     debug_log "Removing: ${COMMAND_FILE}"
     rm -f -- "$COMMAND_FILE" || rollback_failed=1
+
+    if ((last_login_change_started == 1)); then
+        debug_log "Removing: ${LAST_LOGIN_CONFIG_FILE}"
+
+        if ! rm -f -- "$LAST_LOGIN_CONFIG_FILE" ||
+            ! sshd -t ||
+            ! reload_ssh_daemon; then
+            rollback_failed=1
+        else
+            debug_log "Previous OpenSSH configuration: restored"
+            last_login_change_started=0
+        fi
+    fi
 
     restore_file "$MOTD_FILE" "motd" || rollback_failed=1
     restore_file "$ISSUE_FILE" "issue" || rollback_failed=1
@@ -870,6 +1142,33 @@ rollback_update() {
     return 1
 }
 
+rollback_last_login_configuration() {
+    local rollback_failed=0
+
+    debug_log "Rolling back OpenSSH Last login configuration"
+
+    restore_transaction_file \
+        "$LAST_LOGIN_CONFIG_FILE" "last-login-config" || \
+        rollback_failed=1
+    restore_transaction_file \
+        "${STATE_DIRECTORY}/last-login.sha256" \
+        "state-last-login" || rollback_failed=1
+
+    if ! sshd -t || ! reload_ssh_daemon; then
+        rollback_failed=1
+    fi
+
+    if ((rollback_failed == 0)); then
+        debug_log "Previous OpenSSH configuration: restored"
+        last_login_change_started=0
+        changes_started=0
+        return 0
+    fi
+
+    preserve_temporary=1
+    return 1
+}
+
 rollback_uninstallation() {
     local mode
     local rollback_failed=0
@@ -892,6 +1191,17 @@ rollback_uninstallation() {
         rollback_failed=1
     restore_transaction_file "$MOTD_FILE" "motd" || rollback_failed=1
     restore_transaction_file "$ISSUE_FILE" "issue" || rollback_failed=1
+
+    if ((last_login_change_started == 1)); then
+        if ! restore_transaction_file \
+                "$LAST_LOGIN_CONFIG_FILE" "last-login-config" ||
+            ! sshd -t ||
+            ! reload_ssh_daemon; then
+            rollback_failed=1
+        else
+            last_login_change_started=0
+        fi
+    fi
 
     if [[ -f $rollback_mode_file ]]; then
         while IFS=$'\t' read -r mode script_name; do
@@ -933,6 +1243,9 @@ on_failure() {
                 ;;
             update)
                 rollback_update && rollback_succeeded=1
+                ;;
+            last-login)
+                rollback_last_login_configuration && rollback_succeeded=1
                 ;;
             uninstall)
                 rollback_uninstallation && rollback_succeeded=1
@@ -985,7 +1298,7 @@ read_menu_choice() {
         fi
 
         case $answer in
-            1|2|3)
+            1|2|3|4)
                 if ((answer <= maximum)); then
                     menu_choice=$answer
                     return 0
@@ -1045,22 +1358,37 @@ prompt_install_action() {
 }
 
 prompt_installed_action() {
+    local last_login_status_text
+
+    detect_effective_last_login
+
+    case $last_login_effective in
+        enabled) last_login_status_text="enabled" ;;
+        disabled) last_login_status_text="disabled" ;;
+        *) last_login_status_text="unavailable" ;;
+    esac
+
     print_header
     printf 'Status: installed\n\n'
+    printf 'OpenSSH Last login: %s\n\n' "$last_login_status_text"
     printf '  1) Update\n'
-    printf '  2) Uninstall\n'
-    printf '  3) Cancel\n\n'
+    printf '  2) Configure OpenSSH Last login\n'
+    printf '  3) Uninstall\n'
+    printf '  4) Cancel\n\n'
 
-    read_menu_choice 3 3
+    read_menu_choice 4 4
 
     case $menu_choice in
         1)
             selected_action="update"
             ;;
         2)
-            selected_action="uninstall"
+            selected_action="last-login"
             ;;
         3)
+            selected_action="uninstall"
+            ;;
+        4)
             selected_action="cancel"
             ;;
     esac
@@ -1086,6 +1414,21 @@ confirm_uninstallation() {
                 "the installed manual command was modified and will be removed."
             ;;
     esac
+
+    if ((last_login_managed == 1)); then
+        case $last_login_config_status in
+            valid)
+                ;;
+            missing)
+                print_warning \
+                    "the managed OpenSSH Last login configuration is missing."
+                ;;
+            modified)
+                print_warning \
+                    "the modified OpenSSH Last login configuration will be kept."
+                ;;
+        esac
+    fi
 
     confirm_yes_no \
         "Uninstall ${PROJECT_NAME} and restore the previous MOTD?"
@@ -1131,6 +1474,162 @@ confirm_update_repair() {
     fi
 
     confirm_yes_no "Repair the installation from the repository?"
+}
+
+run_last_login_configuration() {
+    local result_message
+
+    active_operation="OpenSSH Last login configuration"
+    operation_key="last-login"
+    step_count=3
+
+    begin_step 1 "Validating installation..."
+    validate_installed_state
+    detect_effective_last_login
+    debug_log "OpenSSH Last login: ${last_login_effective}"
+    complete_step
+
+    if ((last_login_managed == 1)) &&
+        [[ $last_login_config_status == "valid" ]]; then
+        if [[ $last_login_effective != "enabled" ]]; then
+            fail \
+                "managed configuration does not enable OpenSSH Last login notices"
+        fi
+
+        cleanup
+        trap - ERR HUP INT TERM
+        print_success "OpenSSH Last login notices are already enabled."
+        return 0
+    fi
+
+    if ((last_login_managed == 0)); then
+        case $last_login_config_status in
+            unmanaged)
+                ;;
+            unmanaged-conflict)
+                fail \
+                    "refusing to overwrite an unmanaged file: ${LAST_LOGIN_CONFIG_FILE}"
+                ;;
+            *)
+                fail \
+                    "unknown OpenSSH Last login configuration status: ${last_login_config_status}"
+                ;;
+        esac
+
+        case $last_login_effective in
+            enabled)
+                cleanup
+                trap - ERR HUP INT TERM
+                print_success \
+                    "OpenSSH Last login notices are already enabled."
+                return 0
+                ;;
+            disabled)
+                result_message="OpenSSH Last login notices were enabled successfully."
+                ;;
+            *)
+                fail "could not inspect the effective OpenSSH configuration"
+                ;;
+        esac
+    else
+        case $last_login_config_status in
+            missing)
+                print_warning \
+                    "the managed OpenSSH Last login configuration is missing."
+                ;;
+            modified)
+                print_warning \
+                    "the managed OpenSSH Last login configuration was modified."
+                ;;
+            *)
+                fail \
+                    "unknown managed Last login status: ${last_login_config_status}"
+                ;;
+        esac
+
+        result_message="OpenSSH Last login configuration was repaired successfully."
+    fi
+
+    if ! sshd -t; then
+        fail "the current OpenSSH configuration is invalid"
+    fi
+
+    if ! select_ssh_reload_method; then
+        fail "could not select a safe OpenSSH reload method"
+    fi
+
+    if ((last_login_managed == 1)); then
+        if ! confirm_yes_no \
+            "Repair the managed OpenSSH Last login configuration?"; then
+            printf 'No changes were made.\n'
+            return 0
+        fi
+    elif ! confirm_yes_no "Enable OpenSSH Last login notices?"; then
+        printf 'No changes were made.\n'
+        return 0
+    fi
+
+    if ((debug_mode == 0)); then
+        printf '\n'
+    fi
+
+    begin_step 2 "Configuring OpenSSH Last login..."
+
+    temporary_directory=$(mktemp -d \
+        "/tmp/${PROJECT_ID}.last-login.XXXXXX")
+    rollback_directory="${temporary_directory}/rollback"
+    install -d -m 0700 -- "$rollback_directory"
+
+    backup_transaction_file \
+        "$LAST_LOGIN_CONFIG_FILE" "last-login-config"
+    backup_transaction_file \
+        "${STATE_DIRECTORY}/last-login.sha256" "state-last-login"
+
+    changes_started=1
+    install_managed_last_login_config
+
+    state_last_login_checksum_temp=$(mktemp \
+        "${STATE_DIRECTORY}/.last-login.sha256.XXXXXX")
+    printf '%s\n' "$desired_last_login_checksum" > \
+        "$state_last_login_checksum_temp"
+    chmod 0600 -- "$state_last_login_checksum_temp"
+    mv -f -- \
+        "$state_last_login_checksum_temp" \
+        "${STATE_DIRECTORY}/last-login.sha256"
+    state_last_login_checksum_temp=""
+
+    complete_step
+    begin_step 3 "Verifying OpenSSH configuration..."
+
+    if ! verify_managed_last_login_config ||
+        [[ $(< "${STATE_DIRECTORY}/last-login.sha256") != \
+            "$desired_last_login_checksum" ]]; then
+        mark_step_failed
+        print_error "managed OpenSSH configuration verification failed"
+        false
+    fi
+
+    detect_effective_last_login
+
+    if [[ $last_login_effective != "enabled" ]]; then
+        mark_step_failed
+        print_error "OpenSSH Last login notices are not enabled"
+        false
+    fi
+
+    debug_log "Managed OpenSSH configuration: ${LAST_LOGIN_CONFIG_FILE}"
+    debug_log "OpenSSH Last login: enabled"
+    complete_step
+
+    last_login_managed=1
+    last_login_config_status="valid"
+    installed_last_login_checksum=$desired_last_login_checksum
+    last_login_change_started=0
+    changes_started=0
+
+    cleanup
+    trap - ERR HUP INT TERM
+    print_success "$result_message"
 }
 
 run_update() {
@@ -1374,6 +1873,17 @@ run_uninstallation() {
         return 0
     fi
 
+    if ((last_login_managed == 1)) &&
+        [[ $last_login_config_status == "valid" ]]; then
+        if ! sshd -t; then
+            fail "the current OpenSSH configuration is invalid"
+        fi
+
+        if ! select_ssh_reload_method; then
+            fail "could not select a safe OpenSSH reload method"
+        fi
+    fi
+
     if ((debug_mode == 0)); then
         printf '\n'
     fi
@@ -1389,6 +1899,12 @@ run_uninstallation() {
     backup_transaction_file "$COMMAND_FILE" "command"
     backup_transaction_file "$MOTD_FILE" "motd"
     backup_transaction_file "$ISSUE_FILE" "issue"
+
+    if ((last_login_managed == 1)); then
+        backup_transaction_file \
+            "$LAST_LOGIN_CONFIG_FILE" "last-login-config"
+    fi
+
     : > "$rollback_mode_file"
 
     for ((index = 0; index < ${#saved_script_names[@]}; index++)); do
@@ -1403,6 +1919,32 @@ run_uninstallation() {
 
     restore_file "$MOTD_FILE" "motd"
     restore_file "$ISSUE_FILE" "issue"
+
+    if ((last_login_managed == 1)) &&
+        [[ $last_login_config_status == "valid" ]]; then
+        debug_log "Removing: ${LAST_LOGIN_CONFIG_FILE}"
+        last_login_change_started=1
+        rm -f -- "$LAST_LOGIN_CONFIG_FILE"
+
+        if ! sshd -t; then
+            mark_step_failed
+            print_error \
+                "OpenSSH rejected the configuration restored during removal"
+            false
+        fi
+
+        if ! reload_ssh_daemon; then
+            mark_step_failed
+            print_error "could not reload OpenSSH during removal"
+            false
+        fi
+
+        debug_log "Previous OpenSSH Last login setting: restored"
+    elif ((last_login_managed == 1)) &&
+        [[ $last_login_config_status == "modified" ]]; then
+        debug_log \
+            "Keeping modified OpenSSH configuration: ${LAST_LOGIN_CONFIG_FILE}"
+    fi
 
     for ((index = 0; index < ${#saved_script_names[@]}; index++)); do
         script_name=${saved_script_names[index]}
@@ -1452,6 +1994,32 @@ run_uninstallation() {
         mark_step_failed
         print_error "installed manual command still exists after removal"
         false
+    fi
+
+    if ((last_login_managed == 1)); then
+        case $last_login_config_status in
+            valid|missing)
+                if [[ -e $LAST_LOGIN_CONFIG_FILE ||
+                    -L $LAST_LOGIN_CONFIG_FILE ]]; then
+                    mark_step_failed
+                    print_error \
+                        "managed OpenSSH configuration still exists after removal"
+                    false
+                fi
+                ;;
+            modified)
+                if [[ ! -f $LAST_LOGIN_CONFIG_FILE ||
+                    -L $LAST_LOGIN_CONFIG_FILE ]] ||
+                    ! cmp -s -- \
+                        "$LAST_LOGIN_CONFIG_FILE" \
+                        "${rollback_directory}/last-login-config"; then
+                    mark_step_failed
+                    print_error \
+                        "modified OpenSSH configuration changed during removal"
+                    false
+                fi
+                ;;
+        esac
     fi
 
     if ! verify_restored_file "$MOTD_FILE" "motd" ||
@@ -1505,6 +2073,7 @@ run_uninstallation() {
     fi
 
     preserve_temporary=0
+    last_login_change_started=0
     complete_step
 
     cleanup
@@ -1542,13 +2111,14 @@ if [[ $ID != "debian" || $VERSION_ID != "13" ]]; then
     fail "this installer currently supports Debian 13 only"
 fi
 
-for command_name in wget sha256sum run-parts sleep cmp; do
+for command_name in wget sha256sum run-parts sleep cmp awk; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         fail "required command not found: ${command_name}"
     fi
 done
 
 debug_log "Required commands: available"
+calculate_desired_last_login_checksum
 
 if [[ -e $STATE_DIRECTORY || -L $STATE_DIRECTORY ]]; then
     if [[ -L $STATE_DIRECTORY || ! -d $STATE_DIRECTORY ||
@@ -1568,6 +2138,15 @@ if [[ -e $STATE_DIRECTORY || -L $STATE_DIRECTORY ]]; then
 
             printf '\n'
             run_update
+            exit 0
+            ;;
+        last-login)
+            if ((debug_mode == 1)); then
+                debug_pacing=1
+            fi
+
+            printf '\n'
+            run_last_login_configuration
             exit 0
             ;;
         uninstall)
@@ -1656,6 +2235,8 @@ case $selected_action in
         exit 0
         ;;
 esac
+
+prompt_enable_last_login
 
 if ((debug_mode == 1)); then
     debug_pacing=1
@@ -1753,6 +2334,15 @@ chmod 0755 -- "$TARGET_FILE"
 debug_log "Installed mode 0755: ${TARGET_FILE}"
 debug_log "Installed mode 0755: ${COMMAND_FILE}"
 
+if ((last_login_requested == 1)); then
+    install_managed_last_login_config
+    printf '%s\n' "$desired_last_login_checksum" > \
+        "${state_work_directory}/last-login.sha256"
+    last_login_managed=1
+    installed_last_login_checksum=$desired_last_login_checksum
+    last_login_config_status="valid"
+fi
+
 complete_step
 begin_step 4 "Verifying installation..."
 
@@ -1794,6 +2384,26 @@ fi
 debug_log "Executing installed manual command for verification"
 "$COMMAND_FILE" >/dev/null
 
+if ((last_login_requested == 1)); then
+    if ! verify_managed_last_login_config ||
+        [[ $(< "${state_work_directory}/last-login.sha256") != \
+            "$desired_last_login_checksum" ]]; then
+        mark_step_failed
+        print_error "managed OpenSSH configuration verification failed"
+        false
+    fi
+
+    detect_effective_last_login
+
+    if [[ $last_login_effective != "enabled" ]]; then
+        mark_step_failed
+        print_error "OpenSSH Last login notices are not enabled"
+        false
+    fi
+
+    debug_log "OpenSSH Last login: enabled"
+fi
+
 complete_step
 
 : > "${state_work_directory}/installed"
@@ -1802,6 +2412,7 @@ mv -- "$state_work_directory" "$STATE_DIRECTORY"
 debug_log "Installation state saved: ${STATE_DIRECTORY}"
 
 changes_started=0
+last_login_change_started=0
 state_work_directory=""
 cleanup
 trap - ERR HUP INT TERM
