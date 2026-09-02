@@ -10,11 +10,12 @@ umask 077
 readonly PROJECT_NAME="Debian Server Info MOTD"
 readonly PROJECT_ID="debian-server-info-motd"
 readonly REPOSITORY="RazisID12/debian-server-info-motd"
-readonly SOURCE_REF="main"
-readonly RAW_BASE_URL="https://raw.githubusercontent.com/${REPOSITORY}/${SOURCE_REF}"
+readonly DEFAULT_SOURCE_REF="main"
 readonly PAYLOAD_PATH="etc/update-motd.d/10-server-info"
 readonly COMMAND_PATH="usr/local/bin/server-info"
 readonly CHECKSUM_PATH="SHA256SUMS"
+readonly VERSION_PATH="VERSION"
+readonly VERSION_PATTERN='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
 
 readonly MOTD_DIRECTORY="/etc/update-motd.d"
 readonly TARGET_FILE="${MOTD_DIRECTORY}/10-server-info"
@@ -23,7 +24,7 @@ readonly COMMAND_FILE="${COMMAND_DIRECTORY}/server-info"
 readonly MOTD_FILE="/etc/motd"
 readonly ISSUE_FILE="/etc/issue"
 readonly STATE_DIRECTORY="/var/lib/${PROJECT_ID}"
-readonly CURRENT_STATE_FORMAT="1"
+readonly CURRENT_STATE_FORMAT="2"
 
 readonly STEP_DELAY="0.4"
 readonly DEBUG_LINE_DELAY="0.1"
@@ -40,17 +41,23 @@ command_temp_file=""
 state_checksum_temp=""
 state_command_checksum_temp=""
 state_source_ref_temp=""
+state_version_temp=""
 downloaded_script=""
 downloaded_command=""
 downloaded_checksums=""
+downloaded_version=""
 expected_checksum=""
 expected_command_checksum=""
+expected_version_checksum=""
 actual_checksum=""
 actual_command_checksum=""
+actual_version_checksum=""
 installed_checksum=""
 installed_command_checksum=""
 installed_source_ref=""
+installed_version=""
 installed_state_format=""
+source_version=""
 verification_checksum=""
 selected_action=""
 menu_choice=""
@@ -65,26 +72,99 @@ step_active=0
 debug_mode=0
 debug_pacing=0
 preserve_temporary=0
+source_ref="$DEFAULT_SOURCE_REF"
+source_ref_seen=0
 
 saved_script_modes=()
 saved_script_names=()
 
-case $# in
-    0)
-        ;;
-    1)
-        if [[ $1 != "--debug" ]]; then
-            printf 'Error: unsupported option: %s\n' "$1" >&2
-            exit 2
-        fi
+print_usage() {
+    printf 'Usage: install.sh [--debug] [--source-ref <branch-or-tag>]\n\n'
+    printf 'Options:\n'
+    printf '  --debug                       Show detailed operation output\n'
+    printf '  --source-ref <branch-or-tag>  Download files from this Git ref\n'
+    printf '  -h, --help                    Show this help message\n'
+}
 
-        debug_mode=1
-        ;;
-    *)
-        printf 'Error: expected no arguments or --debug\n' >&2
-        exit 2
-        ;;
-esac
+validate_source_ref() {
+    local candidate=$1
+
+    [[ -n $candidate && ${#candidate} -le 200 ]] || return 1
+    [[ $candidate =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || return 1
+    [[ $candidate != *".."* && $candidate != *"//"* ]] || return 1
+    [[ $candidate != */ && $candidate != *. ]] || return 1
+    [[ $candidate != */.* ]] || return 1
+    [[ $candidate != *.lock && $candidate != *".lock/"* ]] || return 1
+}
+
+validate_version() {
+    local candidate=$1
+
+    [[ $candidate =~ $VERSION_PATTERN ]]
+}
+
+while (($# > 0)); do
+    case $1 in
+        --debug)
+            if ((debug_mode == 1)); then
+                printf 'Error: option specified more than once: --debug\n' >&2
+                exit 2
+            fi
+
+            debug_mode=1
+            shift
+            ;;
+        --source-ref)
+            if ((source_ref_seen == 1)); then
+                printf 'Error: option specified more than once: --source-ref\n' >&2
+                exit 2
+            fi
+
+            if (($# < 2)); then
+                printf 'Error: --source-ref requires a branch or tag\n' >&2
+                exit 2
+            fi
+
+            source_ref=$2
+
+            if ! validate_source_ref "$source_ref"; then
+                printf 'Error: invalid source reference: %s\n' "$source_ref" >&2
+                exit 2
+            fi
+
+            source_ref_seen=1
+            shift 2
+            ;;
+        --source-ref=*)
+            if ((source_ref_seen == 1)); then
+                printf 'Error: option specified more than once: --source-ref\n' >&2
+                exit 2
+            fi
+
+            source_ref=${1#*=}
+
+            if ! validate_source_ref "$source_ref"; then
+                printf 'Error: invalid source reference: %s\n' "$source_ref" >&2
+                exit 2
+            fi
+
+            source_ref_seen=1
+            shift
+            ;;
+        -h|--help)
+            print_usage
+            exit 0
+            ;;
+        *)
+            printf 'Error: unsupported option: %s\n' "$1" >&2
+            print_usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+readonly SOURCE_REF="$source_ref"
+readonly RAW_BASE_URL="https://raw.githubusercontent.com/${REPOSITORY}/${SOURCE_REF}"
 
 COLOR_RESET=""
 COLOR_BOLD=""
@@ -210,6 +290,7 @@ download_file() {
 download_and_verify_payload() {
     local download_step=$1
     local verify_step=$2
+    local -a version_lines=()
 
     begin_step "$download_step" "Downloading files..."
 
@@ -217,6 +298,7 @@ download_and_verify_payload() {
     downloaded_script="${temporary_directory}/${PAYLOAD_PATH}"
     downloaded_command="${temporary_directory}/${COMMAND_PATH}"
     downloaded_checksums="${temporary_directory}/${CHECKSUM_PATH}"
+    downloaded_version="${temporary_directory}/${VERSION_PATH}"
 
     debug_log "Temporary directory: ${temporary_directory}"
 
@@ -232,6 +314,11 @@ download_and_verify_payload() {
     if ! download_file \
         "${RAW_BASE_URL}/${COMMAND_PATH}" "$downloaded_command"; then
         fail "could not download ${COMMAND_PATH}"
+    fi
+
+    if ! download_file \
+        "${RAW_BASE_URL}/${VERSION_PATH}" "$downloaded_version"; then
+        fail "could not download ${VERSION_PATH}"
     fi
 
     if ! download_file \
@@ -256,7 +343,7 @@ download_and_verify_payload() {
     fi
 
     expected_checksum=${expected_checksum,,}
-    debug_log "Expected SHA-256: ${expected_checksum}"
+    debug_log "Expected MOTD SHA-256: ${expected_checksum}"
 
     expected_command_checksum=$(
         awk -v path="$COMMAND_PATH" '
@@ -274,10 +361,26 @@ download_and_verify_payload() {
     expected_command_checksum=${expected_command_checksum,,}
     debug_log "Expected command SHA-256: ${expected_command_checksum}"
 
+    expected_version_checksum=$(
+        awk -v path="$VERSION_PATH" '
+            $2 == path {
+                print $1
+                exit
+            }
+        ' "$downloaded_checksums"
+    )
+
+    if [[ ! $expected_version_checksum =~ ^[[:xdigit:]]{64}$ ]]; then
+        fail "no valid checksum found for ${VERSION_PATH}"
+    fi
+
+    expected_version_checksum=${expected_version_checksum,,}
+    debug_log "Expected version SHA-256: ${expected_version_checksum}"
+
     actual_checksum=$(sha256sum -- "$downloaded_script")
     actual_checksum=${actual_checksum%% *}
 
-    debug_log "Actual SHA-256: ${actual_checksum}"
+    debug_log "Actual MOTD SHA-256: ${actual_checksum}"
 
     if [[ $expected_checksum != "$actual_checksum" ]]; then
         fail "checksum verification failed for ${PAYLOAD_PATH}"
@@ -291,6 +394,29 @@ download_and_verify_payload() {
     if [[ $expected_command_checksum != "$actual_command_checksum" ]]; then
         fail "checksum verification failed for ${COMMAND_PATH}"
     fi
+
+    actual_version_checksum=$(sha256sum -- "$downloaded_version")
+    actual_version_checksum=${actual_version_checksum%% *}
+
+    debug_log "Actual version SHA-256: ${actual_version_checksum}"
+
+    if [[ $expected_version_checksum != "$actual_version_checksum" ]]; then
+        fail "checksum verification failed for ${VERSION_PATH}"
+    fi
+
+    mapfile -t version_lines < "$downloaded_version"
+
+    if ((${#version_lines[@]} != 1)); then
+        fail "expected exactly one version line in ${VERSION_PATH}"
+    fi
+
+    source_version=${version_lines[0]}
+
+    if ! validate_version "$source_version"; then
+        fail "invalid version in ${VERSION_PATH}"
+    fi
+
+    debug_log "Source version: ${source_version}"
 
     if ! bash -n "$downloaded_script"; then
         fail "downloaded MOTD script has invalid Bash syntax"
@@ -329,6 +455,11 @@ cleanup() {
     if [[ -n $state_source_ref_temp &&
         ( -e $state_source_ref_temp || -L $state_source_ref_temp ) ]]; then
         rm -f -- "$state_source_ref_temp"
+    fi
+
+    if [[ -n $state_version_temp &&
+        ( -e $state_version_temp || -L $state_version_temp ) ]]; then
+        rm -f -- "$state_version_temp"
     fi
 
     if ((preserve_temporary == 0)) &&
@@ -439,6 +570,7 @@ validate_installed_state() {
         "${STATE_DIRECTORY}/installed" \
         "${STATE_DIRECTORY}/state-format" \
         "${STATE_DIRECTORY}/source-ref" \
+        "${STATE_DIRECTORY}/version" \
         "${STATE_DIRECTORY}/payload.sha256" \
         "${STATE_DIRECTORY}/command.sha256" \
         "${STATE_DIRECTORY}/enabled-script-modes"; do
@@ -462,9 +594,14 @@ validate_installed_state() {
 
     installed_source_ref=$(< "${STATE_DIRECTORY}/source-ref")
 
-    if [[ ! $installed_source_ref =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ||
-        $installed_source_ref == *".."* ]]; then
+    if ! validate_source_ref "$installed_source_ref"; then
         fail "invalid source reference in installation state"
+    fi
+
+    installed_version=$(< "${STATE_DIRECTORY}/version")
+
+    if ! validate_version "$installed_version"; then
+        fail "invalid version in installation state"
     fi
 
     installed_checksum=$(< "${STATE_DIRECTORY}/payload.sha256")
@@ -635,6 +772,7 @@ validate_installed_state() {
 
     debug_log "Installation state format: ${installed_state_format}"
     debug_log "Installed source reference: ${installed_source_ref}"
+    debug_log "Installed version: ${installed_version}"
     debug_log "Installed payload SHA-256: ${installed_checksum}"
     debug_log "Installed command SHA-256: ${installed_command_checksum}"
     debug_log "Installed MOTD script status: ${target_status}"
@@ -713,6 +851,9 @@ rollback_update() {
         rollback_failed=1
     restore_transaction_file \
         "${STATE_DIRECTORY}/source-ref" "state-source-ref" || \
+        rollback_failed=1
+    restore_transaction_file \
+        "${STATE_DIRECTORY}/version" "state-version" || \
         rollback_failed=1
     if [[ -n $command_temp_file &&
         ( -e $command_temp_file || -L $command_temp_file ) ]]; then
@@ -1025,13 +1166,15 @@ run_update() {
     begin_step 4 "Comparing versions..."
 
     if [[ $actual_checksum != "$installed_checksum" ||
-        $actual_command_checksum != "$installed_command_checksum" ]]; then
+        $actual_command_checksum != "$installed_command_checksum" ||
+        $source_version != "$installed_version" ||
+        $SOURCE_REF != "$installed_source_ref" ]]; then
         update_available=1
     fi
 
     if ((update_available == 0)) &&
         [[ $target_status == "valid" && $command_status == "valid" ]]; then
-        debug_log "Installed version is already current"
+        debug_log "Installed version ${installed_version} is already current"
         complete_step
 
         begin_step 5 "No update required..."
@@ -1044,7 +1187,8 @@ run_update() {
 
         cleanup
         trap - ERR HUP INT TERM
-        print_success "${PROJECT_NAME} is already up to date."
+        print_success \
+            "${PROJECT_NAME} ${installed_version} is already up to date."
         return 0
     fi
 
@@ -1061,15 +1205,25 @@ run_update() {
                 "$actual_command_checksum"
         fi
 
+        if [[ $source_version != "$installed_version" ]]; then
+            debug_log \
+                "Version update: ${installed_version} -> ${source_version}"
+        fi
+
+        if [[ $SOURCE_REF != "$installed_source_ref" ]]; then
+            debug_log \
+                "Source reference update: ${installed_source_ref} -> ${SOURCE_REF}"
+        fi
+
         install_step_description="Installing update..."
-        result_message="${PROJECT_NAME} was updated successfully."
+        result_message="${PROJECT_NAME} ${source_version} was updated successfully."
         verification_step_description="Verifying update..."
     else
         debug_log "Repair required: MOTD script is ${target_status}"
         debug_log "Repair required: manual command is ${command_status}"
         active_operation="Repair"
         install_step_description="Repairing installation..."
-        result_message="${PROJECT_NAME} was repaired successfully."
+        result_message="${PROJECT_NAME} ${source_version} was repaired successfully."
         verification_step_description="Verifying repair..."
     fi
 
@@ -1086,6 +1240,8 @@ run_update() {
         "${STATE_DIRECTORY}/command.sha256" "state-command"
     backup_transaction_file \
         "${STATE_DIRECTORY}/source-ref" "state-source-ref"
+    backup_transaction_file \
+        "${STATE_DIRECTORY}/version" "state-version"
     if [[ -L $COMMAND_DIRECTORY ||
         ( -e $COMMAND_DIRECTORY && ! -d $COMMAND_DIRECTORY ) ]]; then
         fail "expected a directory: ${COMMAND_DIRECTORY}"
@@ -1159,6 +1315,11 @@ run_update() {
     printf '%s\n' "$SOURCE_REF" > "$state_source_ref_temp"
     chmod 0600 -- "$state_source_ref_temp"
 
+    state_version_temp=$(mktemp \
+        "${STATE_DIRECTORY}/.version.XXXXXX")
+    printf '%s\n' "$source_version" > "$state_version_temp"
+    chmod 0600 -- "$state_version_temp"
+
     mv -f -- "$state_checksum_temp" "${STATE_DIRECTORY}/payload.sha256"
     state_checksum_temp=""
     mv -f -- "$state_command_checksum_temp" \
@@ -1166,13 +1327,16 @@ run_update() {
     state_command_checksum_temp=""
     mv -f -- "$state_source_ref_temp" "${STATE_DIRECTORY}/source-ref"
     state_source_ref_temp=""
+    mv -f -- "$state_version_temp" "${STATE_DIRECTORY}/version"
+    state_version_temp=""
 
     if [[ $(< "${STATE_DIRECTORY}/state-format") != \
             "$CURRENT_STATE_FORMAT" ||
         $(< "${STATE_DIRECTORY}/payload.sha256") != "$actual_checksum" ||
         $(< "${STATE_DIRECTORY}/command.sha256") != \
             "$actual_command_checksum" ||
-        $(< "${STATE_DIRECTORY}/source-ref") != "$SOURCE_REF" ]]; then
+        $(< "${STATE_DIRECTORY}/source-ref") != "$SOURCE_REF" ||
+        $(< "${STATE_DIRECTORY}/version") != "$source_version" ]]; then
         mark_step_failed
         print_error "could not verify the updated installation state"
         false
@@ -1180,6 +1344,7 @@ run_update() {
 
     debug_log "Verified payload SHA-256: ${actual_checksum}"
     debug_log "Verified command SHA-256: ${actual_command_checksum}"
+    debug_log "Verified version: ${source_version}"
     complete_step
 
     changes_started=0
@@ -1344,7 +1509,8 @@ run_uninstallation() {
 
     cleanup
     trap - ERR HUP INT TERM
-    print_success "${PROJECT_NAME} was uninstalled successfully."
+    print_success \
+        "${PROJECT_NAME} ${installed_version} was uninstalled successfully."
 }
 
 trap cleanup EXIT
@@ -1532,6 +1698,7 @@ done
 printf '%s\n' "$CURRENT_STATE_FORMAT" > \
     "${state_work_directory}/state-format"
 printf '%s\n' "$SOURCE_REF" > "${state_work_directory}/source-ref"
+printf '%s\n' "$source_version" > "${state_work_directory}/version"
 printf '%s\n' "$actual_checksum" > "${state_work_directory}/payload.sha256"
 printf '%s\n' "$actual_command_checksum" > \
     "${state_work_directory}/command.sha256"
@@ -1638,6 +1805,6 @@ changes_started=0
 state_work_directory=""
 cleanup
 trap - ERR HUP INT TERM
-print_success "${PROJECT_NAME} was installed successfully."
+print_success "${PROJECT_NAME} ${source_version} was installed successfully."
 printf 'Open a new SSH or local console session to see the MOTD.\n'
 printf 'Run server-info at any time to show the same information manually.\n'

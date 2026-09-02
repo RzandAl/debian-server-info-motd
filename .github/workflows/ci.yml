@@ -26,6 +26,32 @@ jobs:
           test -x etc/update-motd.d/10-server-info
           test -x usr/local/bin/server-info
 
+      - name: Verify project version
+        run: |
+          test -f VERSION
+          test "$(wc -l < VERSION)" -eq 1
+          grep -Eq \
+            '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' \
+            VERSION
+
+      - name: Verify installer options
+        run: |
+          bash install.sh --help >/dev/null
+          bash install.sh --debug --source-ref v0.1.0 --help >/dev/null
+
+          set +e
+          bash install.sh --source-ref ../main --help >/dev/null 2>&1
+          invalid_ref_status=$?
+          bash install.sh \
+            --source-ref main \
+            --source-ref main \
+            --help >/dev/null 2>&1
+          duplicate_ref_status=$?
+          set -e
+
+          test "$invalid_ref_status" -eq 2
+          test "$duplicate_ref_status" -eq 2
+
       - name: Verify Bash syntax
         run: |
           bash -n install.sh

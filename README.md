@@ -52,7 +52,9 @@ System information as of 02.09.2026 15:11 UTC
 Network information requires the `ip` command provided by `iproute2`. If it is
 unavailable, the rest of the system summary is still displayed.
 
-## Install
+## Install from `main`
+
+The default installation follows the current `main` branch:
 
 ```bash
 wget --quiet --https-only -O- \
@@ -64,6 +66,24 @@ Select **Install** from the interactive menu. When already logged in as root,
 omit `sudo`.
 
 Open a new SSH or local console session after installation to see the MOTD.
+
+## Install a versioned release
+
+For a reproducible installation, use the same release tag in the download URL
+and in `--source-ref`:
+
+```bash
+release_ref=v0.1.0
+
+wget --quiet --https-only -O- \
+"https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/${release_ref}/install.sh" |
+sudo bash -s -- --source-ref "$release_ref"
+```
+
+The project version is defined in the root `VERSION` file. Release tags use the
+same number with a `v` prefix. The installer verifies `VERSION` together with
+both executable files and records the installed version and source reference in
+its managed state.
 
 ## Manual usage
 
@@ -81,7 +101,8 @@ server-info --help
 
 ## Update or repair
 
-Run the installer again:
+Run the installer again with the same source reference you chose during
+installation. For the current `main` branch:
 
 ```bash
 wget --quiet --https-only -O- \
@@ -91,7 +112,11 @@ sudo bash
 
 Select **Update**. If either managed executable is missing or modified, the
 installer reports it and offers to repair the installation from the repository.
-When both files are already current and valid, no installed file is rewritten.
+When the files, version, and source reference are already current and valid, no
+installed file is rewritten.
+
+To move an installation to another branch or release, run that ref's installer
+and pass the same ref explicitly through `--source-ref`.
 
 ## Uninstall
 
@@ -102,13 +127,16 @@ the managed files and restores the MOTD configuration saved during installation.
 
 The installer:
 
-- downloads the MOTD script, manual command, and `SHA256SUMS` over HTTPS;
-- verifies both SHA-256 checksums and Bash syntax before making changes;
+- downloads the MOTD script, manual command, `VERSION`, and `SHA256SUMS` over
+  HTTPS from one source reference;
+- verifies all managed SHA-256 checksums and both scripts' Bash syntax before
+  making changes;
 - refuses to overwrite unmanaged target files;
 - backs up `/etc/motd`, `/etc/issue`, and the executable modes of active
   `/etc/update-motd.d` scripts;
 - makes `10-server-info` the only active dynamic MOTD script while installed;
-- records managed checksums and recovery state under
+- records the installed version, source reference, managed checksums, and
+  recovery state under
   `/var/lib/debian-server-info-motd`;
 - attempts an automatic rollback if installation, update, repair, or removal
   fails;
@@ -125,13 +153,25 @@ https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/main/install
 sudo bash -s -- --debug
 ```
 
+Use `--source-ref <branch-or-tag>` together with `--debug` when inspecting a
+specific release or development branch. Successful installation, update,
+repair, and removal messages include the relevant project version.
+
+Show all installer options without making changes:
+
+```bash
+wget --quiet --https-only -O- \
+https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/main/install.sh |
+bash -s -- --help
+```
+
 ## Installed files
 
 | Path | Purpose |
 | --- | --- |
 | `/etc/update-motd.d/10-server-info` | Dynamic login summary |
 | `/usr/local/bin/server-info` | Manual system information command |
-| `/var/lib/debian-server-info-motd/` | Checksums, backups, and installation state |
+| `/var/lib/debian-server-info-motd/` | Version, source ref, checksums, backups, and installation state |
 
 ## License
 
