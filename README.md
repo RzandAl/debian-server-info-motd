@@ -14,10 +14,9 @@ System information as of 02.09.2026 15:11 UTC
 
   Kernel:                  6.12.105+deb13-amd64, x86_64
   System type:             Virtual machine (KVM)
-
   Uptime:                  7 days, 12 hours, 36 minutes
 
-  CPU:                     AMD EPYC 9575F 64-Core Processor · 1 vCPU
+  CPU:                     AMD EPYC 9575F 64-Core Processor · 1 vCPU (7%)
   Load average:            0.02 · 0.02 · 0.00 (1m · 5m · 15m)
   Memory:                  0.37 / 1.93 GiB (19%)
   Swap:                    0 / 1.58 GiB (0%)
@@ -29,12 +28,17 @@ System information as of 02.09.2026 15:11 UTC
   Login sessions:          2
 ```
 
+During an interactive SSH login, the MOTD output ends with one blank line so
+OpenSSH's native `Last login` notice is visually separated when `PrintLastLog`
+is enabled. The project does not read or print login history itself, and the
+manual `server-info` command does not add this trailing separator.
+
 ## Features
 
 - Debian version and codename, kernel, and architecture
 - Physical machine, virtual machine, or container detection
 - Human-readable uptime
-- CPU model and virtual CPU count, or physical core and thread counts
+- CPU model, topology, and current utilization
 - Load average, memory, swap, and root filesystem usage
 - Independent IPv4 and IPv6 interface detection
 - Multiple global addresses per selected interface

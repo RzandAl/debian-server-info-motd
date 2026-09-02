@@ -408,6 +408,97 @@ collect_cpu_info() {
     esac
 }
 
+read_cpu_snapshot() {
+    local cpu_idle
+    local cpu_iowait
+    local cpu_irq
+    local cpu_label
+    local cpu_nice
+    local cpu_softirq
+    local cpu_steal
+    local cpu_system
+    local cpu_user
+    local value
+
+    if [[ ! -r /proc/stat ]] ||
+        ! read -r \
+            cpu_label \
+            cpu_user \
+            cpu_nice \
+            cpu_system \
+            cpu_idle \
+            cpu_iowait \
+            cpu_irq \
+            cpu_softirq \
+            cpu_steal \
+            _ < /proc/stat ||
+        [[ $cpu_label != "cpu" ]]; then
+        return 1
+    fi
+
+    for value in \
+        "$cpu_user" \
+        "$cpu_nice" \
+        "$cpu_system" \
+        "$cpu_idle" \
+        "$cpu_iowait" \
+        "$cpu_irq" \
+        "$cpu_softirq" \
+        "$cpu_steal"; do
+        if [[ ! $value =~ ^[0-9]+$ ]]; then
+            return 1
+        fi
+    done
+
+    cpu_snapshot_idle=$((cpu_idle + cpu_iowait))
+    cpu_snapshot_total=$((
+        cpu_user +
+        cpu_nice +
+        cpu_system +
+        cpu_idle +
+        cpu_iowait +
+        cpu_irq +
+        cpu_softirq +
+        cpu_steal
+    ))
+}
+
+collect_cpu_usage() {
+    local busy_delta
+    local first_idle
+    local first_total
+    local idle_delta
+    local second_idle
+    local second_total
+    local total_delta
+
+    cpu_usage_text=""
+
+    if ! read_cpu_snapshot; then
+        return 0
+    fi
+
+    first_idle=$cpu_snapshot_idle
+    first_total=$cpu_snapshot_total
+
+    if ! sleep 0.1 2>/dev/null ||
+        ! read_cpu_snapshot; then
+        return 0
+    fi
+
+    second_idle=$cpu_snapshot_idle
+    second_total=$cpu_snapshot_total
+    idle_delta=$((second_idle - first_idle))
+    total_delta=$((second_total - first_total))
+
+    if ((total_delta <= 0 || idle_delta < 0 || idle_delta > total_delta)); then
+        return 0
+    fi
+
+    busy_delta=$((total_delta - idle_delta))
+    cpu_usage_text="$(((busy_delta * 100 + total_delta / 2) / total_delta))%"
+}
+
 collect_load_info() {
     local load_1
     local load_5
@@ -663,6 +754,12 @@ collect_activity_info() {
 }
 
 print_server_info() {
+    local cpu_display_text=$cpu_text
+
+    if [[ -n $cpu_usage_text ]]; then
+        cpu_display_text+=" (${cpu_usage_text})"
+    fi
+
     if [[ $output_mode == "manual" ]]; then
         printf '%s running %s\n\n' "$hostname" "$os_text"
     else
@@ -673,14 +770,11 @@ print_server_info() {
 
     print_field "Kernel:" "${kernel}, ${architecture}"
     print_field "System type:" "$system_type_text"
-
-    printf '\n'
-
     print_field "Uptime:" "$uptime_text"
 
     printf '\n'
 
-    print_field "CPU:" "$cpu_text"
+    print_field "CPU:" "$cpu_display_text"
     print_field "Load average:" "$load_text"
     print_field "Memory:" "$memory_text"
     print_field "Swap:" "$swap_text"
@@ -694,6 +788,10 @@ print_server_info() {
         "$ipv6_label" "$ipv6_empty_text" "${ipv6_addresses[@]}"
     print_field "Processes:" "$process_count"
     print_field "Login sessions:" "$login_sessions"
+
+    if [[ $output_mode == "motd" ]]; then
+        printf '\n'
+    fi
 }
 
 main() {
@@ -715,6 +813,7 @@ main() {
     collect_virtualization_info
     collect_uptime
     collect_cpu_info
+    collect_cpu_usage
     collect_load_info
     collect_memory_info
     collect_disk_info

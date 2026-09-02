@@ -58,6 +58,55 @@ jobs:
           bash -n etc/update-motd.d/10-server-info
           bash -n usr/local/bin/server-info
 
+      - name: Verify output behavior
+        run: |
+          output_dir=$(mktemp -d)
+          trap 'rm -rf -- "$output_dir"' EXIT
+
+          motd_output="$output_dir/motd"
+          manual_output="$output_dir/manual"
+
+          etc/update-motd.d/10-server-info > "$motd_output"
+          etc/update-motd.d/10-server-info --manual > "$manual_output"
+
+          awk '
+              /^  System type:/ {
+                  if ((getline next_line) <= 0 ||
+                      next_line !~ /^  Uptime:/) {
+                      exit 1
+                  }
+
+                  found = 1
+              }
+
+              END {
+                  if (!found) {
+                      exit 1
+                  }
+              }
+          ' "$motd_output"
+
+          grep -Eq \
+            '^  CPU:[[:space:]].* \([0-9]+%\)$' \
+            "$motd_output"
+          ! grep -q '^Welcome to ' "$manual_output"
+
+          test "$(
+              tail -c 2 "$motd_output" |
+                  od -An -tx1 |
+                  tr -d '[:space:]'
+          )" = '0a0a'
+          test "$(
+              tail -c 1 "$manual_output" |
+                  od -An -tx1 |
+                  tr -d '[:space:]'
+          )" = '0a'
+          test "$(
+              tail -c 2 "$manual_output" |
+                  od -An -tx1 |
+                  tr -d '[:space:]'
+          )" != '0a0a'
+
       - name: Verify SHA-256 checksums
         run: sha256sum -c SHA256SUMS
 
