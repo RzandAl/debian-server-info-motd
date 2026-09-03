@@ -121,20 +121,11 @@ Run the installer for the installed release and select **Uninstall**. After
 confirmation, it removes the managed files and restores the MOTD configuration
 saved during installation.
 
-## Installed files
-
-| Path | Purpose |
-| --- | --- |
-| `/etc/update-motd.d/10-server-info` | Dynamic login summary |
-| `/usr/local/bin/server-info` | Manual system information command |
-| `/var/lib/debian-server-info-motd/` | Version, source ref, checksums, backups, and installation state |
-| `/etc/ssh/sshd_config.d/00-debian-server-info-motd.conf` | Optional managed OpenSSH `Last login` setting |
-
 ## Advanced installer usage
 
-Installation from `main` or another Git ref, `--debug`, `--source-ref`, full
-installer help, verification details, state handling, and rollback behavior are
-documented in [docs/INSTALLER.md](docs/INSTALLER.md).
+Installation from `main` or another Git ref, `--debug`, `--source-ref`, installed
+paths, verification details, state handling, and rollback behavior are documented
+in [docs/INSTALLER.md](docs/INSTALLER.md).
 
 ## License
 
