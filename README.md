@@ -60,38 +60,20 @@ unavailable, the rest of the system summary is still displayed.
 Managing the native `Last login` notice requires `openssh-server` and an active
 Debian `ssh.service`. The MOTD itself does not require OpenSSH.
 
-## Install from `main`
+## Install
 
-The default installation follows the current `main` branch:
+The recommended installation uses the current verified release, **v0.2.0**:
 
 ```bash
 wget --quiet --https-only -O- \
-https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/main/install.sh |
-sudo bash
+https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/v0.2.0/install.sh |
+sudo bash -s -- --source-ref v0.2.0
 ```
 
 Select **Install** from the interactive menu. When already logged in as root,
 omit `sudo`.
 
 Open a new SSH or local console session after installation to see the MOTD.
-
-## Install a versioned release
-
-For a reproducible installation, use the same release tag in the download URL
-and in `--source-ref`:
-
-```bash
-release_ref=v0.2.0
-
-wget --quiet --https-only -O- \
-"https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/${release_ref}/install.sh" |
-sudo bash -s -- --source-ref "$release_ref"
-```
-
-The project version is defined in the root `VERSION` file. Release tags use the
-same number with a `v` prefix. The installer verifies `VERSION` together with
-both executable files and records the installed version and source reference in
-its managed state.
 
 ## Manual usage
 
@@ -107,93 +89,37 @@ Show command help:
 server-info --help
 ```
 
-## OpenSSH Last login notice
+## Update or repair
+
+Run the installer for the release you want to use and select **Update**. To stay
+on v0.2.0:
+
+```bash
+wget --quiet --https-only -O- \
+https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/v0.2.0/install.sh |
+sudo bash -s -- --source-ref v0.2.0
+```
+
+If a managed executable is missing or modified, the installer reports it and
+offers to repair the installation. If the installed files, version, and source
+reference are already current and valid, they are not rewritten.
+
+## OpenSSH `Last login`
 
 The project leaves OpenSSH configuration unchanged by default. If
 `PrintLastLog` is effectively disabled during a new installation, the installer
 offers to enable it explicitly; the default answer is **No**.
 
 For an existing installation, run the installer and select **Configure OpenSSH
-Last login**. If the notice is already enabled, the action makes no changes. If
-it is disabled and you confirm the change, the installer:
-
-- creates `/etc/ssh/sshd_config.d/00-debian-server-info-motd.conf` without
-  editing existing OpenSSH configuration files;
-- validates the complete configuration with `sshd -t` before applying it;
-- reloads the active Debian SSH service and verifies the effective value;
-- records ownership of the drop-in in the installation state.
-
-The managed drop-in is removed during uninstallation, restoring the previous
-effective configuration. If that file was modified after installation, the
-uninstaller preserves it instead of deleting user changes.
-
-## Update or repair
-
-Run the installer again with the same source reference you chose during
-installation. For the current `main` branch:
-
-```bash
-wget --quiet --https-only -O- \
-https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/main/install.sh |
-sudo bash
-```
-
-Select **Update**. If either managed executable is missing or modified, the
-installer reports it and offers to repair the installation from the repository.
-When the files, version, and source reference are already current and valid, no
-installed file is rewritten.
-
-To move an installation to another branch or release, run that ref's installer
-and pass the same ref explicitly through `--source-ref`.
+Last login**. The project uses a separately managed OpenSSH drop-in, validates
+the configuration before applying it, and restores the previous effective
+setting during uninstallation.
 
 ## Uninstall
 
-Run the same installer and select **Uninstall**. After confirmation, it removes
-the managed files and restores the MOTD configuration saved during installation.
-
-## Installer behavior
-
-The installer:
-
-- downloads the MOTD script, manual command, `VERSION`, and `SHA256SUMS` over
-  HTTPS from one source reference;
-- verifies all managed SHA-256 checksums and both scripts' Bash syntax before
-  making changes;
-- refuses to overwrite unmanaged target files;
-- backs up `/etc/motd`, `/etc/issue`, and the executable modes of active
-  `/etc/update-motd.d` scripts;
-- makes `10-server-info` the only active dynamic MOTD script while installed;
-- records the installed version, source reference, managed checksums, and
-  recovery state under
-  `/var/lib/debian-server-info-motd`;
-- optionally enables OpenSSH's native `Last login` notice through a separately
-  tracked configuration drop-in;
-- attempts an automatic rollback if installation, update, repair, or removal
-  fails;
-- restores the previous static MOTD files and script modes during uninstallation.
-
-## Debug mode
-
-Use `--debug` to show validation, download, checksum, comparison, and recovery
-details:
-
-```bash
-wget --no-verbose --https-only -O- \
-https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/main/install.sh |
-sudo bash -s -- --debug
-```
-
-Use `--source-ref <branch-or-tag>` together with `--debug` when inspecting a
-specific release or development branch. Successful installation, update,
-repair, and removal messages include the relevant project version.
-
-Show all installer options without making changes:
-
-```bash
-wget --quiet --https-only -O- \
-https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/main/install.sh |
-bash -s -- --help
-```
+Run the installer for the installed release and select **Uninstall**. After
+confirmation, it removes the managed files and restores the MOTD configuration
+saved during installation.
 
 ## Installed files
 
@@ -203,6 +129,12 @@ bash -s -- --help
 | `/usr/local/bin/server-info` | Manual system information command |
 | `/var/lib/debian-server-info-motd/` | Version, source ref, checksums, backups, and installation state |
 | `/etc/ssh/sshd_config.d/00-debian-server-info-motd.conf` | Optional managed OpenSSH `Last login` setting |
+
+## Advanced installer usage
+
+Installation from `main` or another Git ref, `--debug`, `--source-ref`, full
+installer help, verification details, state handling, and rollback behavior are
+documented in [docs/INSTALLER.md](docs/INSTALLER.md).
 
 ## License
 
