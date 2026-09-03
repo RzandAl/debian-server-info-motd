@@ -137,6 +137,15 @@ The managed drop-in is removed during uninstallation, restoring the previous
 effective configuration. If the file has been modified after installation, the
 uninstaller preserves it instead of deleting user changes.
 
+## Installed paths
+
+| Path | Purpose |
+| --- | --- |
+| `/etc/update-motd.d/10-server-info` | Dynamic login summary |
+| `/usr/local/bin/server-info` | Manual system information command |
+| `/var/lib/debian-server-info-motd/` | Version, source ref, checksums, backups, and installation state |
+| `/etc/ssh/sshd_config.d/00-debian-server-info-motd.conf` | Optional managed OpenSSH `Last login` setting |
+
 ## Installed state
 
 Persistent installer state is stored under:
