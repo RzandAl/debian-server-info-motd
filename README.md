@@ -81,7 +81,7 @@ For a reproducible installation, use the same release tag in the download URL
 and in `--source-ref`:
 
 ```bash
-release_ref=v0.1.0
+release_ref=v0.2.0
 
 wget --quiet --https-only -O- \
 "https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/${release_ref}/install.sh" |
