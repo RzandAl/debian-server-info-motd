@@ -193,6 +193,26 @@ write_managed_config() {
     chmod 0644 -- "$TEST_LAST_LOGIN_CONFIG"
 }
 
+assert_managed_config() {
+    local actual_checksum
+    local expected_checksum
+
+    expected_checksum=$(
+        printf '%s\n' \
+            '# Managed by Debian Server Info MOTD.' \
+            'PrintLastLog yes' |
+            sha256sum
+    )
+    expected_checksum=${expected_checksum%% *}
+    actual_checksum=$(sha256sum -- "$TEST_LAST_LOGIN_CONFIG")
+    actual_checksum=${actual_checksum%% *}
+
+    [[ $actual_checksum == "$expected_checksum" ]]
+    [[ $(< "$TEST_LAST_LOGIN_STATE") == "$expected_checksum" ]]
+    [[ $(stat -c '%U:%G:%a' -- "$TEST_LAST_LOGIN_CONFIG") == \
+        'root:root:644' ]]
+}
+
 run_installer() {
     local expected_status=$1
     local input=$2
@@ -217,6 +237,17 @@ run_installer() {
         tail -n 40 -- "$TEST_OUTPUT" >&2
         exit 1
     fi
+}
+
+test_enable_unmanaged_setting() {
+    prepare_fixture
+
+    run_installer 0 '2\ny\n'
+
+    assert_managed_config
+    assert_contains \
+        'OpenSSH Last login notices were enabled successfully.'
+    [[ $(grep -Fc 'reload-success' "$TEST_SERVICE_LOG") -eq 1 ]]
 }
 
 test_stop_valid_management() {
@@ -271,29 +302,13 @@ test_stop_modified_management() {
 }
 
 test_repair_modified_management() {
-    local actual_checksum
-    local expected_checksum
-
     prepare_fixture
     write_managed_state
     printf 'PrintLastLog no\n' > "$TEST_LAST_LOGIN_CONFIG"
 
     run_installer 0 '2\n1\n'
 
-    expected_checksum=$(
-        printf '%s\n' \
-            '# Managed by Debian Server Info MOTD.' \
-            'PrintLastLog yes' |
-            sha256sum
-    )
-    expected_checksum=${expected_checksum%% *}
-    actual_checksum=$(sha256sum -- "$TEST_LAST_LOGIN_CONFIG")
-    actual_checksum=${actual_checksum%% *}
-
-    [[ $actual_checksum == "$expected_checksum" ]]
-    [[ $(< "$TEST_LAST_LOGIN_STATE") == "$expected_checksum" ]]
-    [[ $(stat -c '%U:%G:%a' -- "$TEST_LAST_LOGIN_CONFIG") == \
-        'root:root:644' ]]
+    assert_managed_config
     assert_contains \
         'OpenSSH Last login configuration was repaired successfully.'
     [[ $(grep -Fc 'reload-success' "$TEST_SERVICE_LOG") -eq 1 ]]
@@ -325,6 +340,7 @@ test_reload_failure_rolls_back() {
 }
 
 prepare_installer
+test_enable_unmanaged_setting
 test_stop_valid_management
 test_stop_missing_management
 test_stop_modified_management
