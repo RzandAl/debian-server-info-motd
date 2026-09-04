@@ -1147,20 +1147,26 @@ rollback_last_login_configuration() {
 
     debug_log "Rolling back OpenSSH Last login configuration"
 
-    restore_transaction_file \
-        "$LAST_LOGIN_CONFIG_FILE" "last-login-config" || \
-        rollback_failed=1
+    if ((last_login_change_started == 1)); then
+        restore_transaction_file \
+            "$LAST_LOGIN_CONFIG_FILE" "last-login-config" || \
+            rollback_failed=1
+    fi
+
     restore_transaction_file \
         "${STATE_DIRECTORY}/last-login.sha256" \
         "state-last-login" || rollback_failed=1
 
-    if ! sshd -t || ! reload_ssh_daemon; then
-        rollback_failed=1
+    if ((last_login_change_started == 1)); then
+        if ! sshd -t || ! reload_ssh_daemon; then
+            rollback_failed=1
+        else
+            debug_log "Previous OpenSSH configuration: restored"
+            last_login_change_started=0
+        fi
     fi
 
     if ((rollback_failed == 0)); then
-        debug_log "Previous OpenSSH configuration: restored"
-        last_login_change_started=0
         changes_started=0
         return 0
     fi
@@ -1477,6 +1483,9 @@ confirm_update_repair() {
 }
 
 run_last_login_configuration() {
+    local configuration_action=""
+    local effective_status_text
+    local previous_last_login_status
     local result_message
 
     active_operation="OpenSSH Last login configuration"
@@ -1488,19 +1497,6 @@ run_last_login_configuration() {
     detect_effective_last_login
     debug_log "OpenSSH Last login: ${last_login_effective}"
     complete_step
-
-    if ((last_login_managed == 1)) &&
-        [[ $last_login_config_status == "valid" ]]; then
-        if [[ $last_login_effective != "enabled" ]]; then
-            fail \
-                "managed configuration does not enable OpenSSH Last login notices"
-        fi
-
-        cleanup
-        trap - ERR HUP INT TERM
-        print_success "OpenSSH Last login notices are already enabled."
-        return 0
-    fi
 
     if ((last_login_managed == 0)); then
         case $last_login_config_status in
@@ -1521,10 +1517,11 @@ run_last_login_configuration() {
                 cleanup
                 trap - ERR HUP INT TERM
                 print_success \
-                    "OpenSSH Last login notices are already enabled."
+                    "OpenSSH Last login notices are already enabled outside this project."
                 return 0
                 ;;
             disabled)
+                configuration_action="enable"
                 result_message="OpenSSH Last login notices were enabled successfully."
                 ;;
             *)
@@ -1533,6 +1530,20 @@ run_last_login_configuration() {
         esac
     else
         case $last_login_config_status in
+            valid)
+                if [[ $last_login_effective != "enabled" ]]; then
+                    fail \
+                        "managed configuration does not enable OpenSSH Last login notices"
+                fi
+
+                if confirm_yes_no \
+                    "Stop managing OpenSSH Last login notices?"; then
+                    configuration_action="stop"
+                else
+                    printf 'No changes were made.\n'
+                    return 0
+                fi
+                ;;
             missing)
                 print_warning \
                     "the managed OpenSSH Last login configuration is missing."
@@ -1547,33 +1558,59 @@ run_last_login_configuration() {
                 ;;
         esac
 
-        result_message="OpenSSH Last login configuration was repaired successfully."
+        if [[ -z $configuration_action ]]; then
+            printf '\n'
+            printf '  1) Repair the managed configuration\n'
+            printf '  2) Stop managing OpenSSH Last login\n'
+            printf '  3) Cancel\n\n'
+
+            read_menu_choice 3 3
+
+            case $menu_choice in
+                1)
+                    configuration_action="repair"
+                    result_message="OpenSSH Last login configuration was repaired successfully."
+                    ;;
+                2)
+                    configuration_action="stop"
+                    ;;
+                3)
+                    printf 'No changes were made.\n'
+                    return 0
+                    ;;
+            esac
+        fi
     fi
 
-    if ! sshd -t; then
-        fail "the current OpenSSH configuration is invalid"
-    fi
-
-    if ! select_ssh_reload_method; then
-        fail "could not select a safe OpenSSH reload method"
-    fi
-
-    if ((last_login_managed == 1)); then
-        if ! confirm_yes_no \
-            "Repair the managed OpenSSH Last login configuration?"; then
+    if [[ $configuration_action == "enable" ]]; then
+        if ! confirm_yes_no "Enable OpenSSH Last login notices?"; then
             printf 'No changes were made.\n'
             return 0
         fi
-    elif ! confirm_yes_no "Enable OpenSSH Last login notices?"; then
-        printf 'No changes were made.\n'
-        return 0
+    fi
+
+    previous_last_login_status=$last_login_config_status
+
+    if [[ $configuration_action != "stop" ||
+        $previous_last_login_status == "valid" ]]; then
+        if ! sshd -t; then
+            fail "the current OpenSSH configuration is invalid"
+        fi
+
+        if ! select_ssh_reload_method; then
+            fail "could not select a safe OpenSSH reload method"
+        fi
     fi
 
     if ((debug_mode == 0)); then
         printf '\n'
     fi
 
-    begin_step 2 "Configuring OpenSSH Last login..."
+    if [[ $configuration_action == "stop" ]]; then
+        begin_step 2 "Stopping Last login management..."
+    else
+        begin_step 2 "Configuring OpenSSH Last login..."
+    fi
 
     temporary_directory=$(mktemp -d \
         "/tmp/${PROJECT_ID}.last-login.XXXXXX")
@@ -1586,50 +1623,156 @@ run_last_login_configuration() {
         "${STATE_DIRECTORY}/last-login.sha256" "state-last-login"
 
     changes_started=1
-    install_managed_last_login_config
 
-    state_last_login_checksum_temp=$(mktemp \
-        "${STATE_DIRECTORY}/.last-login.sha256.XXXXXX")
-    printf '%s\n' "$desired_last_login_checksum" > \
-        "$state_last_login_checksum_temp"
-    chmod 0600 -- "$state_last_login_checksum_temp"
-    mv -f -- \
-        "$state_last_login_checksum_temp" \
-        "${STATE_DIRECTORY}/last-login.sha256"
-    state_last_login_checksum_temp=""
+    if [[ $configuration_action == "stop" ]]; then
+        case $previous_last_login_status in
+            valid)
+                debug_log "Removing: ${LAST_LOGIN_CONFIG_FILE}"
+                last_login_change_started=1
+                rm -f -- "$LAST_LOGIN_CONFIG_FILE"
+
+                if ! sshd -t; then
+                    mark_step_failed
+                    print_error \
+                        "OpenSSH rejected the configuration after removing the managed setting"
+                    false
+                fi
+
+                if ! reload_ssh_daemon; then
+                    mark_step_failed
+                    print_error "could not reload OpenSSH"
+                    false
+                fi
+                ;;
+            missing)
+                debug_log \
+                    "Managed OpenSSH configuration is already absent"
+                ;;
+            modified)
+                debug_log \
+                    "Keeping modified OpenSSH configuration: ${LAST_LOGIN_CONFIG_FILE}"
+                ;;
+        esac
+
+        debug_log \
+            "Removing management state: ${STATE_DIRECTORY}/last-login.sha256"
+        rm -f -- "${STATE_DIRECTORY}/last-login.sha256"
+    else
+        install_managed_last_login_config
+
+        state_last_login_checksum_temp=$(mktemp \
+            "${STATE_DIRECTORY}/.last-login.sha256.XXXXXX")
+        printf '%s\n' "$desired_last_login_checksum" > \
+            "$state_last_login_checksum_temp"
+        chmod 0600 -- "$state_last_login_checksum_temp"
+        mv -f -- \
+            "$state_last_login_checksum_temp" \
+            "${STATE_DIRECTORY}/last-login.sha256"
+        state_last_login_checksum_temp=""
+    fi
 
     complete_step
     begin_step 3 "Verifying OpenSSH configuration..."
 
-    if ! verify_managed_last_login_config ||
-        [[ $(< "${STATE_DIRECTORY}/last-login.sha256") != \
-            "$desired_last_login_checksum" ]]; then
-        mark_step_failed
-        print_error "managed OpenSSH configuration verification failed"
-        false
+    if [[ $configuration_action == "stop" ]]; then
+        if [[ -e ${STATE_DIRECTORY}/last-login.sha256 ||
+            -L ${STATE_DIRECTORY}/last-login.sha256 ]]; then
+            mark_step_failed
+            print_error "OpenSSH management state was not removed"
+            false
+        fi
+
+        case $previous_last_login_status in
+            valid|missing)
+                if [[ -e $LAST_LOGIN_CONFIG_FILE ||
+                    -L $LAST_LOGIN_CONFIG_FILE ]]; then
+                    mark_step_failed
+                    print_error \
+                        "managed OpenSSH configuration was not removed"
+                    false
+                fi
+                ;;
+            modified)
+                if [[ ! -f $LAST_LOGIN_CONFIG_FILE ||
+                    -L $LAST_LOGIN_CONFIG_FILE ]] ||
+                    ! cmp -s -- \
+                        "$LAST_LOGIN_CONFIG_FILE" \
+                        "${rollback_directory}/last-login-config" ||
+                    [[ $(stat -c '%u:%g:%a' -- \
+                            "$LAST_LOGIN_CONFIG_FILE") != \
+                        "$(stat -c '%u:%g:%a' -- \
+                            "${rollback_directory}/last-login-config")" ]]; then
+                    mark_step_failed
+                    print_error \
+                        "modified OpenSSH configuration changed while management was removed"
+                    false
+                fi
+                ;;
+        esac
+
+        detect_effective_last_login
+
+        case $last_login_effective in
+            enabled) effective_status_text="enabled" ;;
+            disabled) effective_status_text="disabled" ;;
+            *) effective_status_text="unavailable" ;;
+        esac
+
+        if [[ $previous_last_login_status == "valid" &&
+            $last_login_effective == "unavailable" ]]; then
+            mark_step_failed
+            print_error \
+                "could not inspect OpenSSH after removing the managed setting"
+            false
+        fi
+
+        debug_log "Managed OpenSSH Last login: no"
+        debug_log "OpenSSH Last login: ${effective_status_text}"
+        result_message="OpenSSH Last login is no longer managed by ${PROJECT_NAME}."
+    else
+        if ! verify_managed_last_login_config ||
+            [[ $(< "${STATE_DIRECTORY}/last-login.sha256") != \
+                "$desired_last_login_checksum" ]]; then
+            mark_step_failed
+            print_error "managed OpenSSH configuration verification failed"
+            false
+        fi
+
+        detect_effective_last_login
+
+        if [[ $last_login_effective != "enabled" ]]; then
+            mark_step_failed
+            print_error "OpenSSH Last login notices are not enabled"
+            false
+        fi
+
+        debug_log "Managed OpenSSH configuration: ${LAST_LOGIN_CONFIG_FILE}"
+        debug_log "OpenSSH Last login: enabled"
     fi
 
-    detect_effective_last_login
-
-    if [[ $last_login_effective != "enabled" ]]; then
-        mark_step_failed
-        print_error "OpenSSH Last login notices are not enabled"
-        false
-    fi
-
-    debug_log "Managed OpenSSH configuration: ${LAST_LOGIN_CONFIG_FILE}"
-    debug_log "OpenSSH Last login: enabled"
     complete_step
 
-    last_login_managed=1
-    last_login_config_status="valid"
-    installed_last_login_checksum=$desired_last_login_checksum
+    if [[ $configuration_action == "stop" ]]; then
+        last_login_managed=0
+        last_login_config_status="unmanaged"
+        installed_last_login_checksum=""
+    else
+        last_login_managed=1
+        last_login_config_status="valid"
+        installed_last_login_checksum=$desired_last_login_checksum
+    fi
+
     last_login_change_started=0
     changes_started=0
 
     cleanup
     trap - ERR HUP INT TERM
     print_success "$result_message"
+
+    if [[ $configuration_action == "stop" ]]; then
+        printf 'Effective OpenSSH Last login setting: %s.\n' \
+            "$effective_status_text"
+    fi
 }
 
 run_update() {
