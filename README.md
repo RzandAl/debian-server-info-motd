@@ -66,7 +66,7 @@ The recommended installation uses the current verified release, **v0.2.0**:
 
 ```bash
 wget --quiet --https-only -O- \
-https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/v0.2.0/install.sh |
+https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/v0.2.0/install.sh |
 sudo bash -s -- --source-ref v0.2.0
 ```
 
@@ -96,7 +96,7 @@ on v0.2.0:
 
 ```bash
 wget --quiet --https-only -O- \
-https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/v0.2.0/install.sh |
+https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/v0.2.0/install.sh |
 sudo bash -s -- --source-ref v0.2.0
 ```
 

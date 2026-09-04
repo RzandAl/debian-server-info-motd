@@ -9,7 +9,7 @@ umask 077
 
 readonly PROJECT_NAME="Debian Server Info MOTD"
 readonly PROJECT_ID="debian-server-info-motd"
-readonly REPOSITORY="RazisID12/debian-server-info-motd"
+readonly REPOSITORY="RzandAl/debian-server-info-motd"
 readonly DEFAULT_SOURCE_REF="main"
 readonly PAYLOAD_PATH="etc/update-motd.d/10-server-info"
 readonly COMMAND_PATH="usr/local/bin/server-info"
