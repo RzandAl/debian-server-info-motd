@@ -17,7 +17,7 @@ and `--source-ref`. This keeps the installer and its payload on the same version
 
 ```bash
 wget --quiet --https-only -O- \
-https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/main/install.sh |
+https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/main/install.sh |
 sudo bash
 ```
 
@@ -29,7 +29,7 @@ Because `main` is the default source reference, no extra option is required.
 release_ref=v0.2.0
 
 wget --quiet --https-only -O- \
-"https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/${release_ref}/install.sh" |
+"https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/${release_ref}/install.sh" |
 sudo bash -s -- --source-ref "$release_ref"
 ```
 
@@ -42,7 +42,7 @@ prefix. The same form can be used for an older release tag.
 source_ref=my-branch
 
 wget --quiet --https-only -O- \
-"https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/${source_ref}/install.sh" |
+"https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/${source_ref}/install.sh" |
 sudo bash -s -- --source-ref "$source_ref"
 ```
 
@@ -69,7 +69,7 @@ For `main`:
 
 ```bash
 wget --no-verbose --https-only -O- \
-https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/main/install.sh |
+https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/main/install.sh |
 sudo bash -s -- --debug
 ```
 
@@ -80,7 +80,7 @@ To show installer help without making changes:
 
 ```bash
 wget --quiet --https-only -O- \
-https://raw.githubusercontent.com/RazisID12/debian-server-info-motd/main/install.sh |
+https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/main/install.sh |
 bash -s -- --help
 ```
 
