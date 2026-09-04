@@ -24,6 +24,7 @@ jobs:
         run: |
           test -x install.sh
           test -x etc/update-motd.d/10-server-info
+          test -x tests/test-last-login-management.sh
           test -x usr/local/bin/server-info
 
       - name: Verify project version
@@ -110,6 +111,9 @@ jobs:
       - name: Verify SHA-256 checksums
         run: sha256sum -c SHA256SUMS
 
+      - name: Test OpenSSH Last login management
+        run: sudo tests/test-last-login-management.sh
+
       - name: Install ShellCheck
         run: |
           sudo apt-get update
@@ -120,4 +124,5 @@ jobs:
           shellcheck \
             install.sh \
             etc/update-motd.d/10-server-info \
+            tests/test-last-login-management.sh \
             usr/local/bin/server-info

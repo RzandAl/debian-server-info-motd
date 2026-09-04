@@ -26,7 +26,7 @@ Because `main` is the default source reference, no extra option is required.
 ### Versioned release
 
 ```bash
-release_ref=v0.2.0
+release_ref=v0.3.0
 
 wget --quiet --https-only -O- \
 "https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/${release_ref}/install.sh" |
@@ -133,9 +133,20 @@ change is confirmed, the installer:
 - reloads the active Debian `ssh.service` and verifies the effective setting;
 - records ownership of the drop-in in the installation state.
 
-The managed drop-in is removed during uninstallation, restoring the previous
-effective configuration. If the file has been modified after installation, the
-uninstaller preserves it instead of deleting user changes.
+Select the same action again to stop management. If the managed drop-in still
+matches the recorded checksum, the installer removes it, validates the complete
+OpenSSH configuration, reloads `ssh.service`, and reports the resulting
+effective setting. This does not force `PrintLastLog no`; OpenSSH resumes using
+the remaining system configuration.
+
+If the managed drop-in is already missing, the installer removes only the stale
+ownership record. If it was modified after installation, the installer preserves
+the file byte-for-byte and removes only its ownership record. Every path is
+transactional: a failed validation or reload restores the previous file and
+state.
+
+Uninstallation follows the same ownership rules. An unchanged managed drop-in
+is removed, while a modified file is preserved instead of deleting user changes.
 
 ## Installed paths
 

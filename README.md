@@ -62,12 +62,12 @@ Debian `ssh.service`. The MOTD itself does not require OpenSSH.
 
 ## Install
 
-The recommended installation uses the current verified release, **v0.2.0**:
+The recommended installation uses the current verified release, **v0.3.0**:
 
 ```bash
 wget --quiet --https-only -O- \
-https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/v0.2.0/install.sh |
-sudo bash -s -- --source-ref v0.2.0
+https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/v0.3.0/install.sh |
+sudo bash -s -- --source-ref v0.3.0
 ```
 
 Select **Install** from the interactive menu. When already logged in as root,
@@ -92,12 +92,12 @@ server-info --help
 ## Update or repair
 
 Run the installer for the release you want to use and select **Update**. To stay
-on v0.2.0:
+on v0.3.0:
 
 ```bash
 wget --quiet --https-only -O- \
-https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/v0.2.0/install.sh |
-sudo bash -s -- --source-ref v0.2.0
+https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/v0.3.0/install.sh |
+sudo bash -s -- --source-ref v0.3.0
 ```
 
 If a managed executable is missing or modified, the installer reports it and
@@ -112,8 +112,10 @@ offers to enable it explicitly; the default answer is **No**.
 
 For an existing installation, run the installer and select **Configure OpenSSH
 Last login**. The project uses a separately managed OpenSSH drop-in, validates
-the configuration before applying it, and restores the previous effective
-setting during uninstallation.
+the configuration before applying it, and can stop managing the setting again
+without forcing `PrintLastLog` off. A modified drop-in is preserved; otherwise
+the managed drop-in is removed and OpenSSH resumes using its underlying
+configuration. The same cleanup happens during uninstallation.
 
 ## Uninstall
 
