@@ -28,10 +28,12 @@ System information as of 02.09.2026 15:11 UTC
   Login sessions:          2
 ```
 
-During an interactive SSH login, the MOTD output ends with one blank line so
-OpenSSH's native `Last login` notice is visually separated when `PrintLastLog`
-is enabled. The project does not read or print login history itself, and the
-manual `server-info` command does not add this trailing separator.
+Both the interactive MOTD output and the manual `server-info` command end with
+one blank line. The manual command also begins with one blank line so its report
+is visually separated from the surrounding shell prompt. During an interactive
+SSH login, the trailing line separates the summary from OpenSSH's native
+`Last login` notice when `PrintLastLog` is enabled. The project does not read or
+print login history itself.
 
 ## Features
 
@@ -62,12 +64,12 @@ Debian `ssh.service`. The MOTD itself does not require OpenSSH.
 
 ## Install
 
-The recommended installation uses the current verified release, **v0.3.0**:
+The recommended installation uses the current verified release, **v0.3.1**:
 
 ```bash
 wget --quiet --https-only -O- \
-https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/v0.3.0/install.sh |
-sudo bash -s -- --source-ref v0.3.0
+https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/v0.3.1/install.sh |
+sudo bash -s -- --source-ref v0.3.1
 ```
 
 Select **Install** from the interactive menu. When already logged in as root,
@@ -92,12 +94,12 @@ server-info --help
 ## Update or repair
 
 Run the installer for the release you want to use and select **Update**. To stay
-on v0.3.0:
+on v0.3.1:
 
 ```bash
 wget --quiet --https-only -O- \
-https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/v0.3.0/install.sh |
-sudo bash -s -- --source-ref v0.3.0
+https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/v0.3.1/install.sh |
+sudo bash -s -- --source-ref v0.3.1
 ```
 
 If a managed executable is missing or modified, the installer reports it and
