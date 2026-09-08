@@ -761,7 +761,7 @@ print_server_info() {
     fi
 
     if [[ $output_mode == "manual" ]]; then
-        printf '%s running %s\n\n' "$hostname" "$os_text"
+        printf '\n%s running %s\n\n' "$hostname" "$os_text"
     else
         printf 'Welcome to %s running %s\n\n' "$hostname" "$os_text"
     fi
@@ -788,10 +788,7 @@ print_server_info() {
         "$ipv6_label" "$ipv6_empty_text" "${ipv6_addresses[@]}"
     print_field "Processes:" "$process_count"
     print_field "Login sessions:" "$login_sessions"
-
-    if [[ $output_mode == "motd" ]]; then
-        printf '\n'
-    fi
+    printf '\n'
 }
 
 main() {
