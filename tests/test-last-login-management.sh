@@ -161,7 +161,7 @@ prepare_fixture() {
     : > "${TEST_STATE_DIRECTORY}/installed"
     printf '2\n' > "${TEST_STATE_DIRECTORY}/state-format"
     printf 'main\n' > "${TEST_STATE_DIRECTORY}/source-ref"
-    printf '0.3.0\n' > "${TEST_STATE_DIRECTORY}/version"
+    printf '0.3.1\n' > "${TEST_STATE_DIRECTORY}/version"
     printf '%s\n' "$payload_checksum" > \
         "${TEST_STATE_DIRECTORY}/payload.sha256"
     printf '%s\n' "$command_checksum" > \
