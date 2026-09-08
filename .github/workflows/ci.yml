@@ -98,15 +98,20 @@ jobs:
                   tr -d '[:space:]'
           )" = '0a0a'
           test "$(
-              tail -c 1 "$manual_output" |
+              head -c 1 "$manual_output" |
                   od -An -tx1 |
                   tr -d '[:space:]'
           )" = '0a'
           test "$(
-              tail -c 2 "$manual_output" |
+              head -c 2 "$manual_output" |
                   od -An -tx1 |
                   tr -d '[:space:]'
           )" != '0a0a'
+          test "$(
+              tail -c 2 "$manual_output" |
+                  od -An -tx1 |
+                  tr -d '[:space:]'
+          )" = '0a0a'
 
       - name: Verify SHA-256 checksums
         run: sha256sum -c SHA256SUMS

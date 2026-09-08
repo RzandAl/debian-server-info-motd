@@ -26,7 +26,7 @@ Because `main` is the default source reference, no extra option is required.
 ### Versioned release
 
 ```bash
-release_ref=v0.3.0
+release_ref=v0.3.1
 
 wget --quiet --https-only -O- \
 "https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/${release_ref}/install.sh" |
