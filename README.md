@@ -21,6 +21,7 @@ information is also available at any time through the `server-info` command.
 - Manual output without the welcome message through `server-info`
 - Optional management of OpenSSH's native `Last login` notice
 - Managed installation, updates, repair, rollback, and uninstallation
+- Explicit unattended actions and read-only JSON health checks for automation
 
 ## Compatibility
 
@@ -30,10 +31,12 @@ information is also available at any time through the `server-info` command.
 | Runtime — KVM | Debian 13 on KVM virtual machines |
 | Login surfaces | Interactive OpenSSH and local console sessions using `/etc/update-motd.d` |
 | Manual command | On-demand output through `server-info` |
-| Installer lifecycle | Install, update, repair, rollback, and uninstall |
+| Installer lifecycle | Interactive menu and explicit unattended install/update/repair/check/uninstall |
 | OpenSSH integration | Optional managed `PrintLastLog` drop-in for Debian `ssh.service` |
 
-The core MOTD requires `wget`, `sha256sum`, `run-parts`, `sleep`, and `cmp`.
+The installer uses `sha256sum`, `run-parts`, `sleep`, `cmp`, `awk`, `flock`,
+`timeout`, and standard Debian core utilities. Network downloads also need
+`wget`; read-only checks and protected local sources do not download files.
 Network information uses the `ip` command from `iproute2`; the remaining system
 summary still renders when it is unavailable.
 
@@ -67,12 +70,12 @@ System information as of 02.09.2026 15:11 UTC
 ## Install
 
 The recommended installation uses the current verified release,
-[`v0.3.1`](https://github.com/RzandAl/debian-server-info-motd/releases/tag/v0.3.1):
+[`v0.4.0`](https://github.com/RzandAl/debian-server-info-motd/releases/tag/v0.4.0):
 
 ```bash
 wget --quiet --https-only -O- \
-https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/v0.3.1/install.sh |
-sudo bash -s -- --source-ref v0.3.1
+https://raw.githubusercontent.com/RzandAl/debian-server-info-motd/v0.4.0/install.sh |
+sudo bash -s -- --source-ref v0.4.0
 ```
 
 Select **Install** from the interactive menu. When already logged in as root,
@@ -82,6 +85,15 @@ the MOTD.
 The installer downloads every managed file from the same Git reference,
 verifies its checksum and Bash syntax, and attempts automatic rollback if a
 managed operation fails.
+
+For automation, download the release installer to a file and use explicit
+actions instead of feeding menu answers. `--install` installs or updates a
+healthy managed installation; modified/missing executables require `--repair`.
+`--check` reports read-only JSON health. Automatic installation never offers
+or enables `PrintLastLog`; existing optional management is preserved.
+
+See the [automation contract](docs/INSTALLER.md#automation) for source staging,
+target-root checks, exit codes and recovery limits.
 
 ## Quick use
 
@@ -109,7 +121,10 @@ Run the installer again to update, repair, configure OpenSSH's native
 
 The repository CI validates executable modes, project versioning, installer
 arguments, Bash syntax, checksum consistency, output formatting, OpenSSH
-`Last login` ownership and rollback behavior, and ShellCheck results.
+`Last login` ownership and rollback behavior, and ShellCheck results. Automation
+regressions cover no-terminal execution, JSON checks, repair, legacy state,
+unchanged second runs, conflicts and recovery. A disposable Debian 13 job runs
+the unmodified installer and real payload through the complete unattended lifecycle.
 
 Run the repository-owned checks from the project root:
 

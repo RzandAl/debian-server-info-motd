@@ -2414,7 +2414,9 @@ read_os_value() {
         index($0, key "=") == 1 {
             count++
             value = substr($0, length(key) + 2)
-            if (substr(value, 1, 1) == "\"" && substr(value, length(value), 1) == "\"")
+            quote = substr(value, 1, 1)
+            if ((quote == "\"" || quote == sprintf("%c", 39)) &&
+                substr(value, length(value), 1) == quote)
                 value = substr(value, 2, length(value) - 2)
         }
         END { if (count != 1) exit 1; print value }
