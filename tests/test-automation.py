@@ -149,7 +149,7 @@ class AutomationTests(unittest.TestCase):
     def test_unmodified_installer_checks_a_target_root_without_writing_or_sourcing_os_release(self):
         fixture = self.fixture()
         marker = fixture.directory / "must-not-exist"
-        fixture.path("/etc/os-release").write_text(f'ID="debian"\nVERSION_ID="13"\nignored=$(touch "{marker}")\n')
+        fixture.path("/etc/os-release").write_text(f'ID=\'debian\'\nVERSION_ID=\'13\'\nignored=$(touch "{marker}")\n')
         before = fixture.capture()
         result = subprocess.run(["bash", str(REPO / "install.sh"), "--check", "--root", str(fixture.root)],
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True, start_new_session=True, timeout=10)
