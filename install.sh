@@ -17,16 +17,7 @@ readonly CHECKSUM_PATH="SHA256SUMS"
 readonly VERSION_PATH="VERSION"
 readonly VERSION_PATTERN='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
 
-readonly MOTD_DIRECTORY="/etc/update-motd.d"
-readonly TARGET_FILE="${MOTD_DIRECTORY}/10-server-info"
-readonly COMMAND_DIRECTORY="/usr/local/bin"
-readonly COMMAND_FILE="${COMMAND_DIRECTORY}/server-info"
-readonly MOTD_FILE="/etc/motd"
-readonly ISSUE_FILE="/etc/issue"
-readonly STATE_DIRECTORY="/var/lib/${PROJECT_ID}"
 readonly CURRENT_STATE_FORMAT="2"
-readonly SSHD_CONFIG_DIRECTORY="/etc/ssh/sshd_config.d"
-readonly LAST_LOGIN_CONFIG_FILE="${SSHD_CONFIG_DIRECTORY}/00-${PROJECT_ID}.conf"
 
 readonly STEP_DELAY="0.4"
 readonly DEBUG_LINE_DELAY="0.1"
@@ -86,15 +77,27 @@ debug_pacing=0
 preserve_temporary=0
 source_ref="$DEFAULT_SOURCE_REF"
 source_ref_seen=0
+automation_action=""
+source_directory=""
+source_directory_seen=0
+check_root=""
+check_root_seen=0
 
 saved_script_modes=()
 saved_script_names=()
 
 print_usage() {
-    printf 'Usage: install.sh [--debug] [--source-ref <branch-or-tag>]\n\n'
+    printf 'Usage: install.sh [--debug] [--source-ref <ref>] [--install|--update|--repair|--check|--uninstall]\n\n'
     printf 'Options:\n'
     printf '  --debug                       Show detailed operation output\n'
     printf '  --source-ref <branch-or-tag>  Download files from this Git ref\n'
+    printf '  --install                    Install or update without interactive questions\n'
+    printf '  --update                     Update an existing installation without questions\n'
+    printf '  --repair                     Explicitly repair managed executables without questions\n'
+    printf '  --check                      Print read-only JSON installation health\n'
+    printf '  --uninstall                  Explicitly uninstall without questions\n'
+    printf '  --source-directory <path>    Use a protected local source with an explicit ref\n'
+    printf '  --root <path>                Inspect a protected target root; --check only\n'
     printf '  -h, --help                    Show this help message\n'
 }
 
@@ -117,6 +120,41 @@ validate_version() {
 
 while (($# > 0)); do
     case $1 in
+        --root)
+            if ((check_root_seen == 1)) || (($# < 2)); then
+                printf 'Error: --root requires one absolute path\n' >&2
+                exit 2
+            fi
+            check_root=$2
+            if [[ $check_root != /* || $check_root == *$'\n'* || $check_root == *$'\r'* ]]; then
+                printf 'Error: invalid check root\n' >&2
+                exit 2
+            fi
+            check_root_seen=1
+            shift 2
+            ;;
+        --install|--update|--repair|--check|--uninstall)
+            if [[ -n $automation_action ]]; then
+                printf 'Error: choose exactly one automated action\n' >&2
+                exit 2
+            fi
+            automation_action=${1#--}
+            shift
+            ;;
+        --source-directory)
+            if ((source_directory_seen == 1)) || (($# < 2)); then
+                printf 'Error: --source-directory requires one absolute path\n' >&2
+                exit 2
+            fi
+            source_directory=$2
+            if [[ $source_directory != /* || $source_directory == *$'\n'* ||
+                $source_directory == *$'\r'* ]]; then
+                printf 'Error: invalid local source directory\n' >&2
+                exit 2
+            fi
+            source_directory_seen=1
+            shift 2
+            ;;
         --debug)
             if ((debug_mode == 1)); then
                 printf 'Error: option specified more than once: --debug\n' >&2
@@ -174,6 +212,34 @@ while (($# > 0)); do
             ;;
     esac
 done
+
+if ((check_root_seen == 1)) && [[ $automation_action != "check" ]]; then
+    printf 'Error: --root is available for read-only --check only\n' >&2
+    exit 2
+fi
+if [[ $check_root == "/" ]]; then check_root=""; fi
+
+readonly MOTD_DIRECTORY="${check_root}/etc/update-motd.d"
+readonly TARGET_FILE="${MOTD_DIRECTORY}/10-server-info"
+readonly COMMAND_DIRECTORY="${check_root}/usr/local/bin"
+readonly COMMAND_FILE="${COMMAND_DIRECTORY}/server-info"
+readonly MOTD_FILE="${check_root}/etc/motd"
+readonly ISSUE_FILE="${check_root}/etc/issue"
+readonly STATE_DIRECTORY="${check_root}/var/lib/${PROJECT_ID}"
+readonly SSHD_CONFIG_DIRECTORY="${check_root}/etc/ssh/sshd_config.d"
+readonly LAST_LOGIN_CONFIG_FILE="${SSHD_CONFIG_DIRECTORY}/00-${PROJECT_ID}.conf"
+
+if [[ -n $automation_action && $automation_action != "check" ]] &&
+    ((source_ref_seen == 0)); then
+    printf 'Error: an automated mutation requires an explicit --source-ref\n' >&2
+    exit 2
+fi
+if [[ -n $source_directory ]] &&
+    { [[ -z $automation_action || $automation_action == "check" ||
+         $automation_action == "uninstall" ]] || ((source_ref_seen == 0)); }; then
+    printf 'Error: a local source requires --install, --update or --repair and --source-ref\n' >&2
+    exit 2
+fi
 
 readonly SOURCE_REF="$source_ref"
 readonly RAW_BASE_URL="https://raw.githubusercontent.com/${REPOSITORY}/${SOURCE_REF}"
@@ -263,6 +329,10 @@ print_error() {
 }
 
 print_warning() {
+    if [[ -n $automation_action ]]; then
+        printf 'Warning: %s\n' "$*" >&2
+        return 0
+    fi
     printf '%sWarning:%s %s\n' \
         "$COLOR_YELLOW" "$COLOR_RESET" "$*" > /dev/tty
 }
@@ -441,6 +511,9 @@ install_managed_last_login_config() {
 }
 
 prompt_enable_last_login() {
+    if [[ -n $automation_action ]]; then
+        return 0
+    fi
     detect_effective_last_login
     debug_log "OpenSSH Last login: ${last_login_effective}"
 
@@ -470,6 +543,16 @@ prompt_enable_last_login() {
 download_file() {
     local source_url=$1
     local destination_path=$2
+
+    if [[ -n $source_directory ]]; then
+        local relative_path=${source_url#"${RAW_BASE_URL}/"}
+        case $relative_path in
+            "$PAYLOAD_PATH"|"$COMMAND_PATH"|"$VERSION_PATH"|"$CHECKSUM_PATH") ;;
+            *) fail "unexpected local source file" ;;
+        esac
+        cp -- "${source_directory}/${relative_path}" "$destination_path"
+        return
+    fi
 
     debug_log "Downloading: ${source_url}"
 
@@ -1436,6 +1519,9 @@ confirm_uninstallation() {
         esac
     fi
 
+    if [[ $automation_action == "uninstall" ]]; then
+        return 0
+    fi
     confirm_yes_no \
         "Uninstall ${PROJECT_NAME} and restore the previous MOTD?"
 }
@@ -1477,6 +1563,12 @@ confirm_update_repair() {
 
     if ((repair_required == 0)); then
         return 0
+    fi
+
+    if [[ $automation_action == "repair" ]]; then
+        return 0
+    elif [[ -n $automation_action ]]; then
+        fail "managed executables need repair; use --repair explicitly"
     fi
 
     confirm_yes_no "Repair the installation from the repository?"
@@ -1823,8 +1915,8 @@ run_update() {
         complete_step
 
         begin_step 6 "Verifying installation..."
-        "$TARGET_FILE" >/dev/null
-        "$COMMAND_FILE" >/dev/null
+        timeout --kill-after=3 15 "$TARGET_FILE" >/dev/null
+        timeout --kill-after=3 15 "$COMMAND_FILE" >/dev/null
         complete_step
 
         cleanup
@@ -1938,8 +2030,8 @@ run_update() {
         false
     fi
 
-    "$TARGET_FILE" >/dev/null
-    "$COMMAND_FILE" >/dev/null
+    timeout --kill-after=3 15 "$TARGET_FILE" >/dev/null
+    timeout --kill-after=3 15 "$COMMAND_FILE" >/dev/null
 
     state_checksum_temp=$(mktemp \
         "${STATE_DIRECTORY}/.payload.sha256.XXXXXX")
@@ -2225,6 +2317,112 @@ run_uninstallation() {
         "${PROJECT_NAME} ${installed_version} was uninstalled successfully."
 }
 
+validate_local_source() {
+    local path
+    local attributes
+    local mode
+
+    [[ -n $source_directory ]] || return 0
+    if [[ $source_directory == "/" ||
+        $(readlink -f -- "$source_directory") != "$source_directory" ]]; then
+        fail "local source must be a canonical real directory"
+    fi
+    validate_protected_ancestors "$source_directory"
+    for path in "$source_directory" \
+        "${source_directory}/etc" "${source_directory}/etc/update-motd.d" \
+        "${source_directory}/usr" "${source_directory}/usr/local" \
+        "${source_directory}/usr/local/bin"; do
+        if [[ -L $path || ! -d $path ]]; then
+            fail "invalid local source directory: ${path}"
+        fi
+        attributes=$(stat -c '%u:%g' -- "$path")
+        mode=$(stat -c '%a' -- "$path")
+        if [[ $attributes != "0:0" ]] || (( (8#$mode & 0022) != 0 )); then
+            fail "local source directory is not protected: ${path}"
+        fi
+    done
+    for path in "$PAYLOAD_PATH" "$COMMAND_PATH" "$VERSION_PATH" "$CHECKSUM_PATH"; do
+        path="${source_directory}/${path}"
+        if [[ -L $path || ! -f $path ]]; then
+            fail "invalid local source file: ${path}"
+        fi
+        attributes=$(stat -c '%u:%g' -- "$path")
+        mode=$(stat -c '%a' -- "$path")
+        if [[ $attributes != "0:0" ]] || (( (8#$mode & 0022) != 0 )); then
+            fail "local source file is not protected: ${path}"
+        fi
+    done
+}
+
+validate_protected_ancestors() {
+    local path=$1
+    local mode
+    while [[ $path != "/" ]]; do
+        if [[ -L $path || ! -d $path || $(stat -c '%u:%g' -- "$path") != "0:0" ]]; then
+            fail "unprotected directory ancestor: ${path}"
+        fi
+        mode=$(stat -c '%a' -- "$path")
+        # A root-owned child cannot be renamed by another user in a sticky
+        # root-owned temporary directory. Other writable ancestors are refused.
+        if (( (8#$mode & 0022) != 0 && (8#$mode & 01000) == 0 )); then
+            fail "unprotected directory ancestor: ${path}"
+        fi
+        path=${path%/*}
+        [[ -n $path ]] || path="/"
+    done
+}
+
+check_installation() {
+    local healthy=true
+    local matches=true
+    local managed=false
+    local status=0
+
+    active_operation="Check"
+    validate_installed_state
+    if [[ $target_status != "valid" || $command_status != "valid" ]]; then
+        healthy=false
+        status=4
+    elif ! check_runtime "$TARGET_FILE" || ! check_runtime "$COMMAND_FILE"; then
+        healthy=false
+        status=4
+    fi
+    if ((source_ref_seen == 1)) && [[ $SOURCE_REF != "$installed_source_ref" ]]; then
+        matches=false
+        if ((status == 0)); then status=5; fi
+    fi
+    if ((last_login_managed == 1)); then managed=true; fi
+    printf '{"schema_version":1,"installed":true,"healthy":%s,"desired_source_matches":%s,"source_ref":"%s","version":"%s","payload_sha256":"%s","command_sha256":"%s","target_status":"%s","command_status":"%s","last_login_managed":%s,"last_login_status":"%s"}\n' \
+        "$healthy" "$matches" "$installed_source_ref" "$installed_version" \
+        "$installed_checksum" "$installed_command_checksum" "$target_status" \
+        "$command_status" "$managed" "$last_login_config_status"
+    exit "$status"
+}
+
+check_runtime() {
+    local target=$1
+    if [[ -n $check_root ]]; then
+        timeout --kill-after=3 15 chroot "$check_root" "${target#"$check_root"}" >/dev/null
+    else
+        timeout --kill-after=3 15 "$target" >/dev/null
+    fi
+}
+
+read_os_value() {
+    # os-release is data, including for --check; never source it as shell code.
+    awk -v key="$2" '
+        index($0, key "=") == 1 {
+            count++
+            value = substr($0, length(key) + 2)
+            quote = substr(value, 1, 1)
+            if ((quote == "\"" || quote == sprintf("%c", 39)) &&
+                substr(value, length(value), 1) == quote)
+                value = substr(value, 2, length(value) - 2)
+        }
+        END { if (count != 1) exit 1; print value }
+    ' "$1"
+}
+
 trap cleanup EXIT
 trap 'on_failure "$?" "$LINENO"' ERR
 trap 'on_failure 129 "$LINENO"' HUP
@@ -2238,15 +2436,25 @@ if ((EUID != 0)); then
     fail "run this installer as root"
 fi
 
-if [[ ! -r /etc/os-release ]]; then
-    fail "cannot read /etc/os-release"
+if [[ -n $check_root ]]; then
+    if [[ -L $check_root || ! -d $check_root ||
+        $(readlink -f -- "$check_root") != "$check_root" ||
+        $(stat -c '%u:%g' -- "$check_root") != "0:0" ]]; then
+        fail "check root must be a protected canonical directory"
+    fi
+    root_mode=$(stat -c '%a' -- "$check_root")
+    if (( (8#$root_mode & 0022) != 0 )); then
+        fail "check root must be a protected canonical directory"
+    fi
+    validate_protected_ancestors "$check_root"
+fi
+if [[ ! -r ${check_root}/etc/os-release ]]; then
+    fail "cannot read target os-release"
 fi
 
-ID=""
-NAME=""
-VERSION_ID=""
-# shellcheck disable=SC1091
-. /etc/os-release
+ID=$(read_os_value "${check_root}/etc/os-release" ID)
+NAME=$ID
+VERSION_ID=$(read_os_value "${check_root}/etc/os-release" VERSION_ID)
 
 debug_log "Operating system: ${NAME:-$ID} ${VERSION_ID}"
 
@@ -2254,11 +2462,23 @@ if [[ $ID != "debian" || $VERSION_ID != "13" ]]; then
     fail "this installer currently supports Debian 13 only"
 fi
 
-for command_name in wget sha256sum run-parts sleep cmp awk; do
+for command_name in sha256sum run-parts sleep cmp awk flock timeout readlink; do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         fail "required command not found: ${command_name}"
     fi
 done
+if [[ $automation_action != "check" && -z $source_directory ]] &&
+    ! command -v wget >/dev/null 2>&1; then
+    fail "required command not found: wget"
+fi
+
+# Existing directory inode: checking creates no lock file or installation state.
+# Every instance of this installer cooperates, including the interactive mode.
+exec {installer_lock_fd}< "${check_root}/var/lib"
+if ! flock --exclusive --nonblock "$installer_lock_fd"; then
+    fail "another MOTD installer is active"
+fi
+validate_local_source
 
 debug_log "Required commands: available"
 calculate_desired_last_login_checksum
@@ -2271,7 +2491,12 @@ if [[ -e $STATE_DIRECTORY || -L $STATE_DIRECTORY ]]; then
     fi
 
     debug_log "Installation state: installed"
-    prompt_installed_action
+    case $automation_action in
+        check) check_installation ;;
+        install|update|repair) selected_action="update" ;;
+        uninstall) selected_action="uninstall" ;;
+        "") prompt_installed_action ;;
+    esac
 
     case $selected_action in
         update)
@@ -2309,6 +2534,13 @@ if [[ -e $STATE_DIRECTORY || -L $STATE_DIRECTORY ]]; then
 fi
 
 debug_log "Installation state: not installed"
+
+if [[ $automation_action == "update" || $automation_action == "repair" ]]; then
+    fail "this action requires an existing managed installation"
+elif [[ $automation_action == "uninstall" ]]; then
+    printf 'No installation to remove.\n'
+    exit 0
+fi
 
 if [[ -e $TARGET_FILE || -L $TARGET_FILE ]]; then
     fail "refusing to overwrite an unmanaged file: ${TARGET_FILE}"
@@ -2368,7 +2600,14 @@ else
     done
 fi
 
-prompt_install_action
+if [[ $automation_action == "check" ]]; then
+    printf '{"schema_version":1,"installed":false,"healthy":false,"desired_source_matches":false}\n'
+    exit 3
+elif [[ $automation_action == "install" ]]; then
+    selected_action="install"
+else
+    prompt_install_action
+fi
 
 case $selected_action in
     install)
@@ -2504,7 +2743,7 @@ if [[ $enabled_output != "$TARGET_FILE" ]]; then
 fi
 
 debug_log "Executing installed MOTD script for verification"
-"$TARGET_FILE" >/dev/null
+timeout --kill-after=3 15 "$TARGET_FILE" >/dev/null
 
 verification_checksum=$(sha256sum -- "$TARGET_FILE")
 verification_checksum=${verification_checksum%% *}
@@ -2525,7 +2764,7 @@ if [[ $verification_checksum != "$actual_command_checksum" ]]; then
 fi
 
 debug_log "Executing installed manual command for verification"
-"$COMMAND_FILE" >/dev/null
+timeout --kill-after=3 15 "$COMMAND_FILE" >/dev/null
 
 if ((last_login_requested == 1)); then
     if ! verify_managed_last_login_config ||

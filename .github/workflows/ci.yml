@@ -119,6 +119,9 @@ jobs:
       - name: Test OpenSSH Last login management
         run: sudo tests/test-last-login-management.sh
 
+      - name: Test noninteractive lifecycle in redirected roots
+        run: sudo python3 tests/test-automation.py -v
+
       - name: Install ShellCheck
         run: |
           sudo apt-get update
@@ -131,3 +134,23 @@ jobs:
             etc/update-motd.d/10-server-info \
             tests/test-last-login-management.sh \
             usr/local/bin/server-info
+
+  native-automation:
+    name: Exercise native unattended MOTD on Debian 13
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    timeout-minutes: 10
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      RZANDAL_MOTD_CI: "1"
+    steps:
+      - name: Install native test prerequisites
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends ca-certificates git python3 wget tzdata util-linux iproute2
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify the unmodified installer and real payload without a terminal
+        run: python3 tests/test-native-automation.py -v
